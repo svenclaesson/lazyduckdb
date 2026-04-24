@@ -26,12 +26,25 @@ type Model struct {
 
 	colWidths []int
 
-	width      int
-	height     int
-	rowOffset  int
-	colOffset  int // leftmost visible data column index
-	cursorRow  int
-	focused    bool
+	width     int
+	height    int
+	rowOffset int
+	colOffset int // leftmost visible data column index
+	cursorRow int
+	focused   bool
+
+	// Client-side "/" search. When searching is true, printable text
+	// from HandleText extends searchQuery; Enter advances to the next
+	// match; Esc exits. Match positions are kept precomputed so we
+	// don't re-scan on every render.
+	searching      bool
+	searchQuery    string
+	searchMatches  []matchPos
+	searchMatchIdx int
+}
+
+type matchPos struct {
+	row, col int
 }
 
 func New() Model {
@@ -61,9 +74,10 @@ func (m *Model) Clear() {
 	m.cursorRow = 0
 }
 
-func (m *Model) Focus()        { m.focused = true }
-func (m *Model) Blur()         { m.focused = false }
-func (m *Model) Focused() bool { return m.focused }
+func (m *Model) Focus()           { m.focused = true }
+func (m *Model) Blur()            { m.focused = false }
+func (m *Model) Focused() bool    { return m.focused }
+func (m *Model) IsSearching() bool { return m.searching }
 
 // Scroll{Left,Right,Up,Down} are focus-independent pan operations.
 // They're called from the mouse-wheel handler in the top-level model
@@ -126,10 +140,48 @@ func (m *Model) recomputeColWidths() {
 	}
 }
 
+// HandleText is the printable-text entry point (space included). It's
+// the only way search mode ingests characters — regular key handling
+// can't see the space character in Bubble Tea v2 (msg.String() returns
+// "space"). Returns true if the input was consumed (meaning no other
+// handling should happen).
+func (m *Model) HandleText(s string) bool {
+	if !m.focused || s == "" {
+		return false
+	}
+	if !m.searching {
+		if s == "/" && len(m.rows) > 0 {
+			m.searching = true
+			m.searchQuery = ""
+			m.searchMatches = nil
+			m.searchMatchIdx = -1
+			return true
+		}
+		return false
+	}
+	// In search mode — append to query (skip a leading "/" so typing
+	// "/" to enter search doesn't self-echo into the query).
+	m.searchQuery += s
+	m.refreshSearch()
+	return true
+}
+
 // HandleKey processes navigation keys within the results table.
 // Returns true if consumed.
 func (m *Model) HandleKey(key string) bool {
-	if !m.focused || len(m.rows) == 0 {
+	if !m.focused {
+		return false
+	}
+	// Search-mode first: these keys only mean something while the
+	// "/" prompt is open. Other keys fall through to the normal
+	// navigation switch below so the user can still scroll around
+	// with highlights active.
+	if m.searching {
+		if m.handleSearchKey(key) {
+			return true
+		}
+	}
+	if len(m.rows) == 0 {
 		return false
 	}
 	switch key {
@@ -177,6 +229,83 @@ func (m *Model) HandleKey(key string) bool {
 	return true
 }
 
+// handleSearchKey drives key input while the / search prompt is open.
+// Enter advances to the next match, Esc exits, Backspace trims the
+// query. Returns false for any other key so the caller falls through
+// to the normal navigation switch — this lets the user scroll with
+// arrow keys while the search query and highlights stay active.
+func (m *Model) handleSearchKey(key string) bool {
+	switch key {
+	case "esc":
+		m.exitSearch()
+		return true
+	case "enter":
+		m.jumpToNextMatch()
+		return true
+	case "backspace":
+		runes := []rune(m.searchQuery)
+		if len(runes) > 0 {
+			m.searchQuery = string(runes[:len(runes)-1])
+			m.refreshSearch()
+		}
+		return true
+	}
+	return false
+}
+
+// refreshSearch recomputes the match set from the current query and
+// jumps to the first match. Called after every query edit.
+func (m *Model) refreshSearch() {
+	if m.searchQuery == "" {
+		m.searchMatches = nil
+		m.searchMatchIdx = -1
+		return
+	}
+	q := strings.ToLower(m.searchQuery)
+	m.searchMatches = m.searchMatches[:0]
+	for r, row := range m.rows {
+		for c, cell := range row {
+			if strings.Contains(strings.ToLower(cell), q) {
+				m.searchMatches = append(m.searchMatches, matchPos{r, c})
+			}
+		}
+	}
+	m.searchMatchIdx = -1
+	if len(m.searchMatches) > 0 {
+		m.jumpToNextMatch()
+	}
+}
+
+// jumpToNextMatch cycles through the match list in row-major order.
+func (m *Model) jumpToNextMatch() {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchMatchIdx = (m.searchMatchIdx + 1) % len(m.searchMatches)
+	pos := m.searchMatches[m.searchMatchIdx]
+	m.cursorRow = pos.row
+	// Ensure row is visible.
+	if m.cursorRow < m.rowOffset {
+		m.rowOffset = m.cursorRow
+	}
+	visible := m.visibleDataRows()
+	if m.cursorRow >= m.rowOffset+visible {
+		m.rowOffset = m.cursorRow - visible + 1
+	}
+	// Ensure the matched column is visible — simplest policy is to
+	// make it the leftmost visible column. Cheap and predictable;
+	// the alternative (compute whether it already fits) needs the
+	// same availWidth calculation the renderer uses.
+	m.colOffset = pos.col
+}
+
+func (m *Model) exitSearch() {
+	m.searching = false
+	m.searchQuery = ""
+	m.searchMatches = nil
+	m.searchMatchIdx = -1
+}
+
 // visibleDataRows is body height excluding header (1) and status (1).
 func (m *Model) visibleDataRows() int {
 	n := m.height - 3 // title + header + status
@@ -191,6 +320,8 @@ var (
 	cellStyle    = lipgloss.NewStyle()
 	cursorStyle  = lipgloss.NewStyle().Reverse(true)
 	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+	searchStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220"))
+	matchStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("220"))
 	borderColor  = lipgloss.Color("240")
 	focusedColor = lipgloss.Color("63")
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63"))
@@ -241,7 +372,14 @@ func (m Model) View() string {
 			if r == m.cursorRow {
 				style = cursorStyle
 			}
-			cells[i] = style.Render(text)
+			rendered := style.Render(text)
+			// Overlay search-match highlights on top of the base
+			// cell style. Done after the row-style pass so the
+			// highlight wins visually even on the cursor row.
+			if m.searching && m.searchQuery != "" {
+				rendered = highlightMatches(text, m.searchQuery, style)
+			}
+			cells[i] = rendered
 		}
 		b.WriteString(strings.Join(cells, colSeparator))
 		b.WriteByte('\n')
@@ -252,11 +390,25 @@ func (m Model) View() string {
 		b.WriteByte('\n')
 	}
 
-	status := fmt.Sprintf("row %d/%d  col %d-%d/%d",
-		m.cursorRow+1, len(m.rows),
-		visibleCols[0]+1, visibleCols[len(visibleCols)-1]+1, len(m.columns),
-	)
-	b.WriteString(statusStyle.Render(status))
+	if m.searching {
+		line := fmt.Sprintf("/%s", m.searchQuery)
+		switch {
+		case len(m.searchMatches) == 0 && m.searchQuery != "":
+			line += "   (no matches — esc to cancel)"
+		case len(m.searchMatches) > 0:
+			line += fmt.Sprintf("   (%d/%d — enter for next, esc to cancel)",
+				m.searchMatchIdx+1, len(m.searchMatches))
+		default:
+			line += "   (type to search, enter next, esc cancel)"
+		}
+		b.WriteString(searchStyle.Render(line))
+	} else {
+		status := fmt.Sprintf("row %d/%d  col %d-%d/%d  (/ to search)",
+			m.cursorRow+1, len(m.rows),
+			visibleCols[0]+1, visibleCols[len(visibleCols)-1]+1, len(m.columns),
+		)
+		b.WriteString(statusStyle.Render(status))
+	}
 
 	return title + "\n" + m.box(b.String(), m.width)
 }
@@ -307,6 +459,35 @@ func (m Model) pickVisibleColumns(avail int) ([]int, []int) {
 		widths = []int{avail}
 	}
 	return cols, widths
+}
+
+// highlightMatches returns the cell text with every case-insensitive
+// occurrence of needle wrapped in matchStyle, and the rest wrapped in
+// the caller's base style so the resulting string keeps the cursor
+// row's reverse-video look on non-matching characters. The input text
+// has already been padded with padOrTruncate, so widths stay stable.
+func highlightMatches(text, needle string, base lipgloss.Style) string {
+	if needle == "" {
+		return base.Render(text)
+	}
+	lowerText := strings.ToLower(text)
+	lowerNeedle := strings.ToLower(needle)
+	var b strings.Builder
+	i := 0
+	for i < len(lowerText) {
+		idx := strings.Index(lowerText[i:], lowerNeedle)
+		if idx < 0 {
+			b.WriteString(base.Render(text[i:]))
+			break
+		}
+		if idx > 0 {
+			b.WriteString(base.Render(text[i : i+idx]))
+		}
+		end := i + idx + len(lowerNeedle)
+		b.WriteString(matchStyle.Render(text[i+idx : end]))
+		i = end
+	}
+	return b.String()
 }
 
 func padOrTruncate(s string, width int) string {

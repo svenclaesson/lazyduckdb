@@ -171,9 +171,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.results.SetData(msg.rs.Columns, msg.rs.Rows)
 		m.status = formatResultStatus(msg.rs)
-		// Keep focus on the editor after a run so the user can keep
-		// editing (adding WHERE clauses, etc.). Switching to results
-		// is a deliberate action via ⌘T / ctrl+T.
+		// Auto-focus the results pane after a successful run so the
+		// user can scroll, search, and navigate immediately. Esc
+		// returns focus to the editor (handled in handleKey below).
+		m.setFocus(focusResults)
 		return m, nil
 
 	case exportResultMsg:
@@ -255,17 +256,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.keymap.Matches(key, m.keymap.FocusResults):
 		m.setFocus(focusResults)
 		return m, nil
-	case key == "esc" && m.focus == focusResults:
+	case key == "esc" && m.focus == focusResults && !m.results.IsSearching():
+		// If a / search is open, esc should exit the search first —
+		// only bounce focus back to the editor when no search is
+		// active. The table's own esc handler runs via HandleKey
+		// further down.
 		m.setFocus(focusEditor)
 		return m, nil
 	}
 
-	// Route to the focused pane. For the editor, prefer the raw
-	// printable text (msg.Text) over msg.String() — in Bubble Tea v2
-	// the spacebar's String() is "space" and the editor's rune-insert
-	// path expects a single-char string like " ". If Text is multi-rune
-	// (IME composition), forward each rune separately so each one hits
-	// the insertRune path.
+	// Route to the focused pane. For both panes we prefer the raw
+	// printable text (msg.Text) over msg.String() — Bubble Tea v2
+	// returns "space" for the spacebar, not " ", and neither the
+	// editor's rune-insert path nor the results' / search prompt
+	// would see spaces otherwise. For multi-rune Text (IME
+	// composition) we forward each rune separately.
 	if m.focus == focusEditor {
 		if msg.Text != "" {
 			for _, r := range msg.Text {
@@ -275,6 +280,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.editor.HandleKey(key)
 		}
 	} else {
+		if msg.Text != "" {
+			for _, r := range msg.Text {
+				if m.results.HandleText(string(r)) {
+					continue
+				}
+			}
+		}
 		m.results.HandleKey(key)
 	}
 	return m, nil

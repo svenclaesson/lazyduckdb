@@ -11,18 +11,24 @@ type Keymap struct {
 	Help         []string
 }
 
-// Default returns macOS-native bindings. Cmd keys arrive as "super+*"
-// when the terminal supports the Kitty keyboard protocol (Ghostty,
-// Kitty, WezTerm, modern iTerm2). On terminals that don't, the Cmd
-// press is either swallowed by the OS or never reaches the app, so we
-// keep a "ctrl+*" fallback for those users (and because ctrl+c is the
-// universal Quit contract in a TUI).
+// Default returns the app's keybindings.
+//
+// Some Cmd chords reach the app only on terminals that speak the
+// Kitty keyboard protocol (Ghostty, Kitty, WezTerm, modern iTerm2),
+// and the rest are intercepted before they arrive:
+//   - cmd+t  → terminal "New Tab" (iTerm2 / Terminal.app)
+//   - cmd+q  → macOS "Quit Application" (OS-level, never reachable)
+//   - cmd+w  → terminal "Close Window"
+//
+// For focus switching we therefore stick to ctrl+* only. ⌘R and ⌘E
+// still work on terminals that forward them (and ctrl+* is always
+// available as a fallback).
 func Default() Keymap {
 	return Keymap{
 		RunQuery:     []string{"super+r", "ctrl+r"},
 		ExportExcel:  []string{"super+e", "ctrl+e"},
-		FocusEditor:  []string{"super+q", "ctrl+q"},
-		FocusResults: []string{"super+t", "ctrl+t"},
+		FocusEditor:  []string{"ctrl+q"},
+		FocusResults: []string{"ctrl+t"},
 		Quit:         []string{"ctrl+c"},
 		Help:         []string{"ctrl+h", "f1"},
 	}
