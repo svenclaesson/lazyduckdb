@@ -4,6 +4,8 @@ package duck
 import (
 	"database/sql"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
@@ -170,9 +172,28 @@ func formatValue(v any) string {
 		return string(val)
 	case string:
 		return val
+	case float64:
+		return formatFloat(val)
+	case float32:
+		return formatFloat(float64(val))
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// formatFloat renders a DuckDB-sourced floating-point value without
+// Go's default scientific notation for large magnitudes. When the
+// value is a whole number (e.g. a date stored as 20200825.0 from a
+// DOUBLE column) it's shown as an integer; non-whole values fall
+// back to the minimum digits needed to round-trip.
+func formatFloat(f float64) string {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return strconv.FormatFloat(f, 'g', -1, 64)
+	}
+	if f == math.Trunc(f) {
+		return strconv.FormatFloat(f, 'f', 0, 64)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func (s *Session) Close() error {
