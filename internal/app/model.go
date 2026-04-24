@@ -94,12 +94,9 @@ func (m Model) View() tea.View {
 		v.AltScreen = true
 		return v
 	}
-	editorHeight := 6
-	statusHeight := 2
-	resultsHeight := m.height - editorHeight - statusHeight - 4
-
-	m.editor.SetSize(m.width, editorHeight-2)
-	m.results.SetSize(m.width, resultsHeight)
+	// Size is persisted via propagateSize() when WindowSizeMsg
+	// arrives; the values the children use during HandleKey are
+	// therefore in sync with what's rendered here.
 
 	head := headerStyle.Render(
 		fmt.Sprintf("lazyduckdb  •  %s  •  %d columns",
@@ -120,12 +117,11 @@ func (m Model) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	// Opt into cell-level mouse reporting so the wheel scrolls the
-	// results table (including horizontal two-finger swipes on macOS
-	// trackpads). Terminals pass clicks and drags through, so the
-	// user can still select text by holding Option/Alt while dragging
-	// in iTerm2 / Terminal.app.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Mouse reporting is intentionally OFF so the terminal's native
+	// click-and-drag text selection / copy works. Enabling cell-motion
+	// mouse mode (for scroll-wheel table scrolling) would steal the
+	// click event and break copy-paste. Keyboard navigation covers
+	// horizontal + vertical scroll (←/→, Home/End, ↑/↓, PgUp/PgDn).
 	return v
 }
 
@@ -162,6 +158,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Propagate the new terminal size down to child components
+		// *here* (not in View — View has a value receiver, so any
+		// SetSize call there is thrown away). Without this, the
+		// table's internal height stays 0 and visibleDataRows() gets
+		// clamped to 1, turning every ↓ press into a viewport scroll.
+		m.propagateSize()
 		return m, nil
 
 	case queryResultMsg:
@@ -196,8 +198,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		return m.handleWheel(msg)
+
+	case tea.PasteMsg:
+		// Bracketed-paste. Terminals send the pasted text as a single
+		// message, separate from KeyPressMsg — without this handler
+		// ⌘V / Ctrl+Shift+V silently drops the clipboard contents.
+		return m.handlePaste(msg), nil
 	}
 	return m, nil
+}
+
+func (m Model) handlePaste(msg tea.PasteMsg) tea.Model {
+	text := msg.Content
+	if text == "" {
+		return m
+	}
+	switch m.focus {
+	case focusEditor:
+		// Feed each rune through the editor so multi-line paste
+		// respects newlines (each one hits insertNewline) and all
+		// autocomplete bookkeeping stays consistent.
+		for _, r := range text {
+			if r == '\n' {
+				m.editor.HandleKey("enter")
+				continue
+			}
+			m.editor.HandleKey(string(r))
+		}
+	case focusResults:
+		// In the results pane, paste only makes sense while the /
+		// search prompt is open — append to the query.
+		if m.results.IsSearching() {
+			for _, r := range text {
+				if r == '\n' || r == '\r' {
+					continue
+				}
+				m.results.HandleText(string(r))
+			}
+		}
+	}
+	return m
 }
 
 // handleWheel pans the results table in response to the scroll wheel.
@@ -227,6 +267,25 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// propagateSize pushes the current terminal size into the child
+// components. Must be called on every WindowSizeMsg so HandleKey
+// (which runs on Update's stored model, not View's transient copy)
+// sees the correct height when computing visibleDataRows.
+func (m *Model) propagateSize() {
+	editorHeight := 6
+	statusHeight := 2
+	resultsHeight := m.height - editorHeight - statusHeight - 4
+	if resultsHeight < 1 {
+		resultsHeight = 1
+	}
+	editorInner := editorHeight - 2
+	if editorInner < 1 {
+		editorInner = 1
+	}
+	m.editor.SetSize(m.width, editorInner)
+	m.results.SetSize(m.width, resultsHeight)
 }
 
 func (m *Model) setFocus(f focus) {

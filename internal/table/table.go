@@ -117,10 +117,11 @@ func (m *Model) ScrollDown() {
 	}
 }
 
-func (m *Model) RowCount() int    { return len(m.rows) }
-func (m *Model) ColCount() int    { return len(m.columns) }
+func (m *Model) RowCount() int     { return len(m.rows) }
+func (m *Model) ColCount() int     { return len(m.columns) }
 func (m *Model) Columns() []string { return m.columns }
 func (m *Model) Rows() [][]string  { return m.rows }
+func (m *Model) CursorRow() int    { return m.cursorRow }
 
 func (m *Model) recomputeColWidths() {
 	m.colWidths = make([]int, len(m.columns))
@@ -193,36 +194,35 @@ func (m *Model) HandleKey(key string) bool {
 		if m.colOffset < len(m.columns)-1 {
 			m.colOffset++
 		}
-	case "shift+left", "home":
+	// Jump to first / last column. Accept both the CSI-u form
+	// (alt+left / alt+right) and the readline form (alt+b / alt+f)
+	// so Option+Arrow works in all macOS terminals — same dual-bind
+	// rule documented in CLAUDE.md for the editor.
+	case "shift+left", "home", "alt+left", "alt+b":
 		m.colOffset = 0
-	case "shift+right", "end":
+	case "shift+right", "end", "alt+right", "alt+f":
 		m.colOffset = len(m.columns) - 1
 	case "up":
 		if m.cursorRow > 0 {
 			m.cursorRow--
 		}
-		if m.cursorRow < m.rowOffset {
-			m.rowOffset = m.cursorRow
-		}
+		m.centerScrollToCursor()
 	case "down":
 		if m.cursorRow < len(m.rows)-1 {
 			m.cursorRow++
 		}
-		visible := m.visibleDataRows()
-		if m.cursorRow >= m.rowOffset+visible {
-			m.rowOffset = m.cursorRow - visible + 1
-		}
-	case "pgup":
+		m.centerScrollToCursor()
+	// Page up / down — the alt+* aliases let Option+Up / Option+Down
+	// scroll by a full viewport on macOS terminals, matching what
+	// users already expect from most editors.
+	case "pgup", "alt+up":
 		step := m.visibleDataRows()
 		m.cursorRow = max(0, m.cursorRow-step)
-		m.rowOffset = max(0, m.rowOffset-step)
-	case "pgdown":
+		m.centerScrollToCursor()
+	case "pgdown", "alt+down":
 		step := m.visibleDataRows()
 		m.cursorRow = min(len(m.rows)-1, m.cursorRow+step)
-		visible := m.visibleDataRows()
-		if m.cursorRow >= m.rowOffset+visible {
-			m.rowOffset = m.cursorRow - visible + 1
-		}
+		m.centerScrollToCursor()
 	default:
 		return false
 	}
@@ -254,7 +254,11 @@ func (m *Model) handleSearchKey(key string) bool {
 }
 
 // refreshSearch recomputes the match set from the current query and
-// jumps to the first match. Called after every query edit.
+// jumps to the first match. Called after every query edit. Column
+// headers participate in the scan too (row = -1 marks a header hit)
+// so a search for a column name that doesn't appear in any cell
+// still finds at least the header — matching the visual highlight
+// the user already sees.
 func (m *Model) refreshSearch() {
 	if m.searchQuery == "" {
 		m.searchMatches = nil
@@ -263,6 +267,13 @@ func (m *Model) refreshSearch() {
 	}
 	q := strings.ToLower(m.searchQuery)
 	m.searchMatches = m.searchMatches[:0]
+	// Header row first so pressing Enter right after opening search
+	// cycles through headers before all the cell hits below.
+	for c, name := range m.columns {
+		if strings.Contains(strings.ToLower(name), q) {
+			m.searchMatches = append(m.searchMatches, matchPos{row: -1, col: c})
+		}
+	}
 	for r, row := range m.rows {
 		for c, cell := range row {
 			if strings.Contains(strings.ToLower(cell), q) {
@@ -277,26 +288,102 @@ func (m *Model) refreshSearch() {
 }
 
 // jumpToNextMatch cycles through the match list in row-major order.
+// The matched cell is placed near the middle of the screen (both
+// vertically and horizontally) so the user doesn't have to hunt for
+// it at an edge. A match with row == -1 is a header hit: pan the
+// column to the middle but leave the data cursor where it is.
 func (m *Model) jumpToNextMatch() {
 	if len(m.searchMatches) == 0 {
 		return
 	}
 	m.searchMatchIdx = (m.searchMatchIdx + 1) % len(m.searchMatches)
 	pos := m.searchMatches[m.searchMatchIdx]
-	m.cursorRow = pos.row
-	// Ensure row is visible.
+	if pos.row >= 0 {
+		m.cursorRow = pos.row
+	}
+	m.centerCellOnScreen(pos.row, pos.col)
+}
+
+// centerCellOnScreen positions the viewport so the cell at (row, col)
+// sits near the middle of both axes, clamped at the edges. Row may
+// be negative (header hit) — in that case vertical position is left
+// alone. Used for search jumps; normal arrow navigation uses the
+// simpler "keep cursor visible" policy in centerScrollToCursor.
+func (m *Model) centerCellOnScreen(row, col int) {
+	// Vertical centering.
+	if row >= 0 {
+		visible := m.visibleDataRows()
+		total := len(m.rows)
+		if total <= visible {
+			m.rowOffset = 0
+		} else {
+			desired := row - visible/2
+			if desired < 0 {
+				desired = 0
+			}
+			maxOffset := total - visible
+			if desired > maxOffset {
+				desired = maxOffset
+			}
+			m.rowOffset = desired
+		}
+	}
+
+	// Horizontal centering (approximate — column widths vary). Walk
+	// left from the target column accumulating widths+separator
+	// until we've consumed roughly half the available content width,
+	// then use that as the new colOffset.
+	avail := m.width - 4
+	if avail < 10 {
+		avail = 10
+	}
+	half := avail / 2
+	sepLen := utf8.RuneCountInString(colSeparator)
+	used := 0
+	offset := col
+	if offset > len(m.colWidths) {
+		offset = len(m.colWidths)
+	}
+	for offset > 0 {
+		w := m.colWidths[offset-1]
+		need := w + sepLen
+		if used+need > half {
+			break
+		}
+		offset--
+		used += need
+	}
+	m.colOffset = offset
+}
+
+// centerScrollToCursor scrolls the viewport just enough to keep the
+// cursor visible. The cursor moves freely inside the current page —
+// only when it would leave the top or bottom of the viewport do we
+// adjust rowOffset. Classic "vim-style" scrolling without any
+// preemptive centering: press down and the highlight moves down one
+// row, it doesn't pull the data up under a stuck cursor.
+//
+// If the whole result set fits on screen (total <= visible), no
+// scrolling ever happens.
+func (m *Model) centerScrollToCursor() {
+	visible := m.visibleDataRows()
+	total := len(m.rows)
+	if total <= visible {
+		m.rowOffset = 0
+		return
+	}
 	if m.cursorRow < m.rowOffset {
 		m.rowOffset = m.cursorRow
-	}
-	visible := m.visibleDataRows()
-	if m.cursorRow >= m.rowOffset+visible {
+	} else if m.cursorRow >= m.rowOffset+visible {
 		m.rowOffset = m.cursorRow - visible + 1
 	}
-	// Ensure the matched column is visible — simplest policy is to
-	// make it the leftmost visible column. Cheap and predictable;
-	// the alternative (compute whether it already fits) needs the
-	// same availWidth calculation the renderer uses.
-	m.colOffset = pos.col
+	maxOffset := total - visible
+	if m.rowOffset > maxOffset {
+		m.rowOffset = maxOffset
+	}
+	if m.rowOffset < 0 {
+		m.rowOffset = 0
+	}
 }
 
 func (m *Model) exitSearch() {
@@ -347,10 +434,17 @@ func (m Model) View() string {
 	visibleCols, widths := m.pickVisibleColumns(availWidth)
 	var b strings.Builder
 
-	// Header row.
+	// Header row — also highlight here when / search is active so
+	// matches in column names light up alongside matches in data
+	// cells. Header isn't a jump target; this is visual only.
 	hdrCells := make([]string, len(visibleCols))
 	for i, idx := range visibleCols {
-		hdrCells[i] = headerStyle.Render(padOrTruncate(m.columns[idx], widths[i]))
+		text := padOrTruncate(m.columns[idx], widths[i])
+		if m.searching && m.searchQuery != "" {
+			hdrCells[i] = highlightMatches(text, m.searchQuery, headerStyle)
+		} else {
+			hdrCells[i] = headerStyle.Render(text)
+		}
 	}
 	b.WriteString(strings.Join(hdrCells, colSeparator))
 	b.WriteByte('\n')
