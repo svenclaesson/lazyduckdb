@@ -1,0 +1,30 @@
+# Binaries
+/lazyduckdb
+/dist/
+/bin/
+*.exe
+*.test
+*.out
+
+# Go build / tooling
+*.prof
+coverage.txt
+coverage.html
+vendor/
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local data the tool might open or produce
+*.parquet
+*.xlsx
+*.duckdb
+*.duckdb.wal
+
+# Env
+.env
+.env.local
