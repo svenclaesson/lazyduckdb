@@ -134,7 +134,7 @@ func (m Model) footer() string {
 	if m.focus == focusResults {
 		pane = "results"
 	}
-	return fmt.Sprintf("[%s] ⌘R run  ⌘E excel  esc→editor  ctrl+c quit", pane)
+	return fmt.Sprintf("[%s] ⌘R run (→ results)  ⌘E excel  esc → editor  ctrl+c quit", pane)
 }
 
 func shortPath(p string) string {
@@ -252,9 +252,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.exportCmd()
 	case m.keymap.Matches(key, m.keymap.FocusEditor):
 		m.setFocus(focusEditor)
-		return m, nil
-	case m.keymap.Matches(key, m.keymap.FocusResults):
-		m.setFocus(focusResults)
 		return m, nil
 	case key == "esc" && m.focus == focusResults && !m.results.IsSearching():
 		// If a / search is open, esc should exit the search first —

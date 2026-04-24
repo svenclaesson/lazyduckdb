@@ -1,6 +1,6 @@
 # lazyduckdb
 
-A TUI for querying parquet files with DuckDB. Built with Bubble Tea, structured after `~/github/lazyaz` (or its binary at `~/go/bin/lazyaz`) — `cmd/<app>/main.go` entry, feature packages under `internal/`.
+A TUI for querying parquet files with DuckDB. Built with Bubble Tea — `cmd/<app>/main.go` entry, feature packages under `internal/`. In the results pane, press `/` to open a client-side incremental search: typing filters highlights live across every loaded row (case-insensitive), Enter cycles to the next match (wraps around), and Esc exits search — arrow keys keep scrolling while highlights stay on.
 
 ## Keybindings: follow macOS conventions
 
@@ -8,13 +8,14 @@ This is primarily a macOS app. Keybindings should feel native. Always register *
 
 | Action | Bind |
 | --- | --- |
-| Run query | `super+r`, `ctrl+r` |
+| Run query (auto-focuses results) | `super+r`, `ctrl+r` |
 | Export to Excel | `super+e`, `ctrl+e` |
-| Focus editor | `super+q`, `ctrl+q` |
-| Focus results | `super+t`, `ctrl+t` |
+| Focus editor from results | `esc` (primary), `ctrl+q` (fallback) |
 | Word left | `alt+left`, `alt+b` |
 | Word right | `alt+right`, `alt+f` |
 | Line start / end | `home`/`end` (add `ctrl+a`/`ctrl+e` if needed) |
+
+Focus model is query-driven: there is no "jump to results" shortcut. Running a query switches focus to results; Esc returns to the editor. Don't re-introduce a manual `super+t` / `ctrl+t` focus-results binding — `cmd+t` is swallowed by every macOS terminal (New Tab), and the user asked to simplify to this model.
 
 ### Why two forms for each
 
