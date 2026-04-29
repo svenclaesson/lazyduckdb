@@ -69,6 +69,29 @@ func (m *Model) Value() string {
 	return strings.Join(m.lines, "\n")
 }
 
+// InsertText inserts raw text at the caret, treating each character
+// literally — no autocomplete trigger, no Enter-accepts-suggestion,
+// no Tab-means-complete. Used by the paste handler so clipboard
+// contents land verbatim even if the text contains prefixes that
+// would otherwise open the column list (e.g. a lone "t" right
+// before a newline would accept the first column starting with "t").
+func (m *Model) InsertText(s string) {
+	if !m.focused || s == "" {
+		return
+	}
+	m.clearSuggestions()
+	for _, r := range s {
+		if r == '\r' {
+			continue
+		}
+		if r == '\n' {
+			m.insertNewline()
+			continue
+		}
+		m.insertRune(r)
+	}
+}
+
 // SetValue replaces the text and moves caret to end.
 func (m *Model) SetValue(s string) {
 	m.lines = strings.Split(s, "\n")
@@ -412,11 +435,21 @@ func isWordByte(b byte) bool {
 }
 
 // refilterSuggestions re-runs the prefix match against the current
-// word at the caret. Uses whichever source list the active popup was
-// drawn from (columns for auto-trigger, full dict for manual Tab) so
-// the list's character doesn't change mid-typing.
+// word at the caret. Uses whichever source list the active popup
+// was drawn from (columns for auto-trigger, full dict for manual
+// Tab) so the list's character doesn't change mid-typing.
+//
+// When the caret is no longer inside a word-run (the user typed a
+// space, paren, operator, etc.), the list is closed rather than
+// widened to "first N entries". Without that, pressing Enter for a
+// newline after typing something like "COUNT(*) " would silently
+// accept whichever column happens to be first in the dictionary.
 func (m *Model) refilterSuggestions() {
 	word, _ := m.currentWord()
+	if word == "" {
+		m.clearSuggestions()
+		return
+	}
 	source := m.sugSource
 	if source == nil {
 		source = m.dictionary

@@ -32,6 +32,10 @@ type Model struct {
 
 	focus  focus
 	status string
+	// lastResult retains counts/columns from the most recent successful
+	// query so the status line can be re-rendered as focus changes
+	// between editor (show run commands) and results (show scroll hints).
+	lastResult *duck.ResultSet
 
 	width  int
 	height int
@@ -102,8 +106,9 @@ func (m Model) View() tea.View {
 		fmt.Sprintf("lazyduckdb  •  %s  •  %d columns",
 			shortPath(m.session.ParquetPath), len(m.session.Columns)))
 
+	status := m.statusLine()
 	style := statusStyle
-	if strings.HasPrefix(m.status, "error:") {
+	if strings.HasPrefix(status, "error:") {
 		style = errorStyle
 	}
 
@@ -111,7 +116,7 @@ func (m Model) View() tea.View {
 		head,
 		m.editor.View(),
 		m.results.View(),
-		style.Render(m.status),
+		style.Render(status),
 		statusStyle.Render(m.footer()),
 	}, "\n")
 
@@ -172,7 +177,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.results.SetData(msg.rs.Columns, msg.rs.Rows)
-		m.status = formatResultStatus(msg.rs)
+		m.lastResult = msg.rs
+		m.status = ""
 		// Auto-focus the results pane after a successful run so the
 		// user can scroll, search, and navigate immediately. Esc
 		// returns focus to the editor (handled in handleKey below).
@@ -215,16 +221,11 @@ func (m Model) handlePaste(msg tea.PasteMsg) tea.Model {
 	}
 	switch m.focus {
 	case focusEditor:
-		// Feed each rune through the editor so multi-line paste
-		// respects newlines (each one hits insertNewline) and all
-		// autocomplete bookkeeping stays consistent.
-		for _, r := range text {
-			if r == '\n' {
-				m.editor.HandleKey("enter")
-				continue
-			}
-			m.editor.HandleKey(string(r))
-		}
+		// Use the paste-specific insertion path so autocomplete
+		// doesn't fire mid-paste. Otherwise a pasted lone "t" right
+		// before a newline would accept the first column starting
+		// with "t" because the \n routes through Enter.
+		m.editor.InsertText(text)
 	case focusResults:
 		// In the results pane, paste only makes sense while the /
 		// search prompt is open — append to the query.
@@ -367,22 +368,55 @@ func (m Model) runQueryCmd() tea.Cmd {
 	}
 }
 
+// statusLine picks what to show beneath the results table. Explicit
+// transient messages (errors, export confirmations, the initial
+// "loaded N columns" greeting) take priority. Otherwise we re-render
+// the last query result, switching the trailing hint based on which
+// pane is focused — scroll hints only make sense in the results pane.
+func (m Model) statusLine() string {
+	if m.status != "" {
+		return m.status
+	}
+	if m.lastResult == nil {
+		return ""
+	}
+	return formatResultStatus(m.lastResult, m.focus)
+}
+
 // formatResultStatus produces the line shown beneath the results
 // table. It's a function so it can be unit-tested without spinning
 // up the whole Bubble Tea model.
-func formatResultStatus(rs *duck.ResultSet) string {
+func formatResultStatus(rs *duck.ResultSet, f focus) string {
 	shown := len(rs.Rows)
+	cols := len(rs.Columns)
+	hint := editorHint(rs)
+	if f == focusResults {
+		hint = resultsHint(rs)
+	}
 	switch {
 	case rs.TotalRows < 0:
-		return fmt.Sprintf("%d rows shown × %d cols — total unknown (non-SELECT?)",
-			shown, len(rs.Columns))
+		return fmt.Sprintf("%d rows shown × %d cols — total unknown (non-SELECT?) — %s",
+			shown, cols, hint)
 	case rs.TotalRows <= shown:
-		return fmt.Sprintf("%d rows × %d cols — ← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all",
-			shown, len(rs.Columns))
+		return fmt.Sprintf("%d rows × %d cols — %s", shown, cols, hint)
 	default:
-		return fmt.Sprintf("showing %d of %d rows × %d cols — ← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all %d",
-			shown, rs.TotalRows, len(rs.Columns), rs.TotalRows)
+		return fmt.Sprintf("showing %d of %d rows × %d cols — %s",
+			shown, rs.TotalRows, cols, hint)
 	}
+}
+
+func editorHint(rs *duck.ResultSet) string {
+	if rs.TotalRows > 0 {
+		return fmt.Sprintf("⌘R re-run · ⌘E export all %d", rs.TotalRows)
+	}
+	return "⌘R re-run · ⌘E export"
+}
+
+func resultsHint(rs *duck.ResultSet) string {
+	if rs.TotalRows > 0 {
+		return fmt.Sprintf("← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all %d", rs.TotalRows)
+	}
+	return "← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all"
 }
 
 func (m Model) exportCmd() tea.Cmd {

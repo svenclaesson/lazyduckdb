@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/svenclaesson/lazyduckdb/internal/app"
 	"github.com/svenclaesson/lazyduckdb/internal/duck"
 	"github.com/svenclaesson/lazyduckdb/internal/picker"
+	"github.com/svenclaesson/lazyduckdb/internal/update"
 )
 
 var version = "0.1"
@@ -59,6 +62,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Probe GitHub for a newer release before we open the alt screen,
+	// otherwise the prompt would be erased the moment Bubble Tea starts.
+	// Skipped when stdin/stdout aren't a TTY (CI, pipes) so non-
+	// interactive runs don't block forever waiting on Enter.
+	if isInteractive() {
+		if r := update.CheckWithTimeout(version, 1500*time.Millisecond); r.Available {
+			fmt.Print(update.PromptText(r.LatestTag, version))
+			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		}
+	}
+
 	session, err := duck.Open(absPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open: %v\n", err)
@@ -74,6 +88,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "application error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// isInteractive reports whether both stdin and stdout look like a
+// terminal. We need stdin so the user can answer the prompt, and
+// stdout so the prompt is actually rendered to a person.
+func isInteractive() bool {
+	return isCharDevice(os.Stdin) && isCharDevice(os.Stdout)
+}
+
+func isCharDevice(f *os.File) bool {
+	st, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice != 0
 }
 
 func choosFromCWD() (string, error) {

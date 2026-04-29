@@ -217,27 +217,63 @@ func TestAlreadyUsedFilterActiveInSelectList(t *testing.T) {
 
 func TestTypingNarrowsOpenSuggestionList(t *testing.T) {
 	m := New()
-	m.SetDictionary([]string{"customer_id", "customer_name", "order_id", "order_date"})
+	m.SetColumns([]string{"customer_id", "customer_name", "order_id", "order_date"})
 	m.Focus()
-	// Open full list on empty caret.
-	m.HandleKey("tab")
-	if len(m.suggestions) != 4 {
-		t.Fatalf("expected 4, got %v", m.suggestions)
-	}
-	// Type "c" — list should narrow to the two customer_* entries.
+	// Auto-trigger opens as soon as a word-rune is typed.
 	m.HandleKey("c")
 	if len(m.suggestions) != 2 {
 		t.Fatalf("expected 2 customer_* entries after 'c', got %v", m.suggestions)
 	}
-	// Backspace should widen back to the full 4.
-	m.HandleKey("backspace")
-	if len(m.suggestions) != 4 {
-		t.Fatalf("expected full list after backspace, got %v", m.suggestions)
-	}
-	// Type something that doesn't match → list becomes empty.
+	// Typing that doesn't match → empty list, but completion stays
+	// active (backspace recovers).
 	m.HandleKey("z")
 	if len(m.suggestions) != 0 {
-		t.Fatalf("expected empty list after 'z', got %v", m.suggestions)
+		t.Fatalf("expected empty list after 'cz', got %v", m.suggestions)
+	}
+	m.HandleKey("backspace")
+	if len(m.suggestions) != 2 {
+		t.Fatalf("expected recovery to 2 entries on backspace, got %v", m.suggestions)
+	}
+}
+
+func TestInsertTextPreservesLiteralContent(t *testing.T) {
+	// Regression: pasting "FROM t\n" must not auto-complete "t" into
+	// the first column starting with that letter.
+	m := New()
+	m.SetColumns([]string{"typ", "datum"}) // "typ" would match "t"
+	m.Focus()
+	m.SetValue("")
+	m.InsertText("FROM t\nWHERE")
+	want := "FROM t\nWHERE"
+	if got := m.Value(); got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+	if len(m.suggestions) != 0 {
+		t.Fatal("InsertText must not leave suggestions open")
+	}
+}
+
+func TestNonWordCharClosesSuggestions(t *testing.T) {
+	// Typing a char that isn't part of a word (space, paren, etc.)
+	// should dismiss the list. Otherwise Enter after "COUNT(*) "
+	// would accept the first column in the dictionary.
+	m := New()
+	m.SetColumns([]string{"Antal", "Datum"})
+	m.Focus()
+	m.SetValue("SELECT ")
+	m.row, m.col = 0, len("SELECT ")
+	m.HandleKey("A") // auto-trigger opens
+	if len(m.suggestions) == 0 {
+		t.Fatal("expected auto-trigger to open a list")
+	}
+	m.HandleKey(" ") // non-word char → list should close
+	if len(m.suggestions) != 0 {
+		t.Fatalf("space should close the list, got %v", m.suggestions)
+	}
+	// Enter should now insert a newline, not accept a stray suggestion.
+	m.HandleKey("enter")
+	if got := m.Value(); got != "SELECT A \n" {
+		t.Fatalf("want literal newline after space, got %q", got)
 	}
 }
 

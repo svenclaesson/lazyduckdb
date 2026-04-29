@@ -58,3 +58,22 @@ go install ./cmd/lazyduckdb
 ```
 
 This drops a fresh `lazyduckdb` binary into `$(go env GOPATH)/bin` (`~/go/bin` on this machine, which is on the user's PATH). Confirm with `which lazyduckdb && lazyduckdb -v` and report the result. Don't ask for confirmation — `install` is the confirmation.
+
+## Shortcut: "release"
+
+When the user's prompt is `release` or `release <X.Y.Z>` (case-insensitive, optional `v` prefix), cut a new GitHub release. The word itself is the confirmation — don't ask again, but DO run the steps in order and stop on the first failure.
+
+If no version was given, infer the next one: read the latest tag with `git tag --list 'v*' --sort=-v:refname | head -1`, fall back to the `version` constant in `cmd/lazyduckdb/main.go` if there are no tags, and bump the patch component (`v0.1` → `v0.1.1`, `v0.2.3` → `v0.2.4`). If the user gave a version, use it verbatim — don't second-guess major/minor bumps.
+
+Steps, in this order:
+
+1. **Pre-flight**: `git status --porcelain` must be empty and the current branch must be `master` (the repo's default — see `git status` at session start). Refuse otherwise; tell the user what's dirty.
+2. **Bump the version constant** in `cmd/lazyduckdb/main.go` — the `version` var. Strip the leading `v` (the constant stores `0.2.0`, the tag is `v0.2.0`). The update-check in `internal/update` compares against this string, so the two must stay in lockstep.
+3. **Build and test**: `go build ./... && go test ./...`. Stop on failure.
+4. **Commit**: stage only `cmd/lazyduckdb/main.go`, message `release vX.Y.Z`. Use the heredoc form with the standard `Co-Authored-By` trailer.
+5. **Tag**: `git tag -a vX.Y.Z -m "vX.Y.Z"` (annotated, not lightweight — `gh release` and `go install @vX.Y.Z` both prefer annotated).
+6. **Push**: `git push github master && git push github vX.Y.Z`. The remote is named `github`, not `origin` (see `git remote -v`).
+7. **GitHub release**: `gh release create vX.Y.Z --generate-notes --title "vX.Y.Z"`. `--generate-notes` lets GitHub build the changelog from commit messages since the previous tag.
+8. **Verify**: `gh release view vX.Y.Z` and report the URL.
+
+Do not push tags with `--force`, do not delete or move existing tags, and do not amend the release commit after pushing — cut a new patch instead. If `gh release create` fails (e.g. tag protection, auth), surface the error verbatim; the tag is already pushed, so the user can retry the release step manually without redoing everything.
