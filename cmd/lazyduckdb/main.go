@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"golang.org/x/term"
 
 	"github.com/svenclaesson/lazyduckdb/internal/app"
 	"github.com/svenclaesson/lazyduckdb/internal/duck"
@@ -30,6 +31,18 @@ func main() {
 	if *showVersion {
 		fmt.Println(version)
 		return
+	}
+
+	// Probe GitHub for a newer release before either the picker or the
+	// main TUI runs — both are Bubble Tea programs, and any prompt we
+	// print after them risks being scrolled past or hidden when alt
+	// screen activates. Skipped when stdin/stdout aren't a TTY (CI,
+	// pipes) so non-interactive runs don't block on Enter.
+	if isInteractive() {
+		if r := update.CheckWithTimeout(version, 1500*time.Millisecond); r.Available {
+			fmt.Print(update.PromptText(r.LatestTag, version))
+			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+		}
 	}
 
 	args := flag.Args()
@@ -62,17 +75,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Probe GitHub for a newer release before we open the alt screen,
-	// otherwise the prompt would be erased the moment Bubble Tea starts.
-	// Skipped when stdin/stdout aren't a TTY (CI, pipes) so non-
-	// interactive runs don't block forever waiting on Enter.
-	if isInteractive() {
-		if r := update.CheckWithTimeout(version, 1500*time.Millisecond); r.Available {
-			fmt.Print(update.PromptText(r.LatestTag, version))
-			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
-		}
-	}
-
 	session, err := duck.Open(absPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open: %v\n", err)
@@ -92,17 +94,11 @@ func main() {
 
 // isInteractive reports whether both stdin and stdout look like a
 // terminal. We need stdin so the user can answer the prompt, and
-// stdout so the prompt is actually rendered to a person.
+// stdout so the prompt is actually rendered to a person. Uses
+// golang.org/x/term — it handles platform quirks (Windows ConPTY,
+// macOS pty edge cases) that a plain ModeCharDevice check misses.
 func isInteractive() bool {
-	return isCharDevice(os.Stdin) && isCharDevice(os.Stdout)
-}
-
-func isCharDevice(f *os.File) bool {
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return st.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 func choosFromCWD() (string, error) {

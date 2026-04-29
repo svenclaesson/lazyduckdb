@@ -61,7 +61,9 @@ This drops a fresh `lazyduckdb` binary into `$(go env GOPATH)/bin` (`~/go/bin` o
 
 ## Shortcut: "release"
 
-When the user's prompt is `release` or `release <X.Y.Z>` (case-insensitive, optional `v` prefix), cut a new GitHub release. The word itself is the confirmation — don't ask again, but DO run the steps in order and stop on the first failure.
+When the user's prompt is `release` or `release <X.Y.Z>` (case-insensitive, optional `v` prefix), prepare a new release **locally only** — bump, commit, tag — then hand the user the exact commands to push and publish. The word itself is the confirmation; don't ask again, but DO run the steps in order and stop on the first failure.
+
+Why local-only: the sandbox blocks `git push github master` (pushing to the default branch bypasses PR review), and `gh release create` depends on the pushed tag. The user pushes from their own shell. Don't try to push or create the GitHub release yourself, even if a previous step succeeded — surface the commands instead.
 
 If no version was given, infer the next one: read the latest tag with `git tag --list 'v*' --sort=-v:refname | head -1`, fall back to the `version` constant in `cmd/lazyduckdb/main.go` if there are no tags, and bump the patch component (`v0.1` → `v0.1.1`, `v0.2.3` → `v0.2.4`). If the user gave a version, use it verbatim — don't second-guess major/minor bumps.
 
@@ -72,8 +74,13 @@ Steps, in this order:
 3. **Build and test**: `go build ./... && go test ./...`. Stop on failure.
 4. **Commit**: stage only `cmd/lazyduckdb/main.go`, message `release vX.Y.Z`. Use the heredoc form with the standard `Co-Authored-By` trailer.
 5. **Tag**: `git tag -a vX.Y.Z -m "vX.Y.Z"` (annotated, not lightweight — `gh release` and `go install @vX.Y.Z` both prefer annotated).
-6. **Push**: `git push github master && git push github vX.Y.Z`. The remote is named `github`, not `origin` (see `git remote -v`).
-7. **GitHub release**: `gh release create vX.Y.Z --generate-notes --title "vX.Y.Z"`. `--generate-notes` lets GitHub build the changelog from commit messages since the previous tag.
-8. **Verify**: `gh release view vX.Y.Z` and report the URL.
+6. **Hand off**: print exactly these two lines for the user to run themselves:
 
-Do not push tags with `--force`, do not delete or move existing tags, and do not amend the release commit after pushing — cut a new patch instead. If `gh release create` fails (e.g. tag protection, auth), surface the error verbatim; the tag is already pushed, so the user can retry the release step manually without redoing everything.
+   ```
+   git push github master && git push github vX.Y.Z
+   gh release create vX.Y.Z --generate-notes --title "vX.Y.Z"
+   ```
+
+   Mention they can verify afterwards with `gh release view vX.Y.Z`. The remote is named `github`, not `origin` (see `git remote -v`).
+
+Don't `git tag -d` or `git reset` to "undo" a release commit — if the user wants to abandon, they can drop the tag and reset themselves; the release flow leaves the working tree at a publishable state and that's the contract. Never use `--force` on a tag push, and don't amend the release commit after the user has pushed — cut a new patch instead.
