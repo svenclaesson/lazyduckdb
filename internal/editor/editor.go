@@ -206,8 +206,8 @@ func (m *Model) HandleKey(key string) bool {
 			// is grammatically valid. `sqlctx.At` walks the buffer up
 			// to the caret and reports the clause we're in. Tab still
 			// works everywhere as the explicit "complete now" path.
-			ctx := sqlctx.At(m.flatText(), m.caretByteOffset())
-			if ctx == sqlctx.ColumnList || ctx == sqlctx.Predicate {
+			switch sqlctx.At(m.flatText(), m.caretByteOffset()) {
+			case sqlctx.SelectList, sqlctx.ColumnList, sqlctx.Predicate:
 				m.openColumnSuggestions()
 			}
 		}
@@ -489,7 +489,7 @@ func (m *Model) refilterSuggestions() {
 // GROUP BY, ORDER BY, JOIN...ON, ...) reusing a column name is normal
 // SQL and shouldn't be hidden. Filtering is case-insensitive.
 func (m *Model) removeAlreadyUsed(suggestions []string) []string {
-	if len(suggestions) == 0 || sqlctx.At(m.flatText(), m.caretByteOffset()) != sqlctx.ColumnList {
+	if len(suggestions) == 0 || sqlctx.At(m.flatText(), m.caretByteOffset()) != sqlctx.SelectList {
 		return suggestions
 	}
 	text := strings.ToLower(strings.Join(m.lines, "\n"))

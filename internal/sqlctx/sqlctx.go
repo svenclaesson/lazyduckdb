@@ -15,9 +15,10 @@ type Context int
 
 const (
 	Unknown Context = iota
-	ColumnList
-	Predicate
-	TablePosition
+	SelectList    // inside the SELECT column list specifically
+	ColumnList    // GROUP BY / ORDER BY / USING() — column position, but not SELECT
+	Predicate     // WHERE / HAVING / JOIN ON
+	TablePosition // FROM / JOIN target
 	StringLiteral
 	Comment
 )
@@ -218,7 +219,9 @@ func contextResult(anc anchor, awaits bool, _ int) Context {
 		return Unknown
 	}
 	switch anc {
-	case aSelect, aGroupBy, aOrderBy, aUsing:
+	case aSelect:
+		return SelectList
+	case aGroupBy, aOrderBy, aUsing:
 		return ColumnList
 	case aWhere, aHaving, aOn:
 		return Predicate

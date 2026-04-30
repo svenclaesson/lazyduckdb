@@ -162,6 +162,20 @@ func TestSuggestionListIsCappedWithHint(t *testing.T) {
 	}
 }
 
+func TestOrderByOffersColumnsAlreadyInSelect(t *testing.T) {
+	// Regression: the dedup filter must only apply to the SELECT list.
+	// In ORDER BY (and GROUP BY), reusing a SELECT column is normal.
+	m := New()
+	m.SetColumns([]string{"customer_id", "customer_name"})
+	m.Focus()
+	m.SetValue("SELECT customer_id FROM t ORDER BY ")
+	m.row, m.col = 0, len("SELECT customer_id FROM t ORDER BY ")
+	m.HandleKey("c")
+	if len(m.suggestions) != 2 {
+		t.Fatalf("ORDER BY should offer SELECTed columns too, got %v", m.suggestions)
+	}
+}
+
 func TestAutoTriggerInJoinOn(t *testing.T) {
 	m := New()
 	m.SetColumns([]string{"customer_id", "customer_name"})

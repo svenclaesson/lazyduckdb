@@ -19,10 +19,10 @@ func TestAt(t *testing.T) {
 		{"SELECTED ^", Unknown}, // false-keyword: not a real SELECT
 
 		// SELECT column list
-		{"SELECT ^", ColumnList},
-		{"SELECT id, ^", ColumnList},
-		{"SELECT id, c^", ColumnList},
-		{"SELECT id^", ColumnList}, // mid-identifier, no terminator yet
+		{"SELECT ^", SelectList},
+		{"SELECT id, ^", SelectList},
+		{"SELECT id, c^", SelectList},
+		{"SELECT id^", SelectList}, // mid-identifier, no terminator yet
 		{"select * from t where ^", Predicate},
 
 		// awaitsComma rule
@@ -32,7 +32,7 @@ func TestAt(t *testing.T) {
 		{"SELECT 'x' ^", Unknown},
 		{"SELECT 1 ^", Unknown},
 		{"SELECT count(*) ^", Unknown},
-		{"SELECT 'it''s ok' , ^", ColumnList}, // escaped quote doesn't end literal
+		{"SELECT 'it''s ok' , ^", SelectList}, // escaped quote doesn't end literal
 
 		// table position
 		{"SELECT * FROM ^", TablePosition},
