@@ -4,10 +4,13 @@ package editor
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/svenclaesson/lazyduckdb/internal/sqlctx"
 )
 
 // Model is the editor state. It renders as a boxed multi-line input
@@ -23,7 +26,10 @@ type Model struct {
 	suggestions []string
 	sugSource   []string // which list the live list was drawn from (for refilter)
 	sugIdx      int
+	sugHidden   int // matches that exist but didn't fit in the visible row
 }
+
+const maxVisibleSuggestions = 8
 
 func New() Model {
 	return Model{
@@ -196,12 +202,14 @@ func (m *Model) HandleKey(key string) bool {
 			// empty so a subsequent backspace can widen it back.
 			m.refilterSuggestions()
 		case isWordRune(r):
-			// Auto-open the column list for any word-rune keystroke.
-			// Columns are useful in SELECT, WHERE, GROUP BY, ORDER BY,
-			// JOIN...ON — basically everywhere in a query — so gating
-			// on "between SELECT and FROM" was too restrictive. Press
-			// Esc to dismiss if you don't want it.
-			m.openColumnSuggestions()
+			// Auto-open only in positions where a column identifier
+			// is grammatically valid. `sqlctx.At` walks the buffer up
+			// to the caret and reports the clause we're in. Tab still
+			// works everywhere as the explicit "complete now" path.
+			ctx := sqlctx.At(m.flatText(), m.caretByteOffset())
+			if ctx == sqlctx.ColumnList || ctx == sqlctx.Predicate {
+				m.openColumnSuggestions()
+			}
 		}
 		return true
 	}
@@ -363,9 +371,9 @@ func (m *Model) handleTab() {
 	// without typing anything first.
 	word, _ := m.currentWord()
 	m.sugSource = m.dictionary
-	m.suggestions = m.removeAlreadyUsed(matchPrefix(m.dictionary, word))
+	m.applySuggestionCap(m.removeAlreadyUsed(matchPrefix(m.dictionary, word)))
 	m.sugIdx = 0
-	if len(m.suggestions) == 1 {
+	if len(m.suggestions) == 1 && m.sugHidden == 0 {
 		m.acceptSuggestion()
 	}
 }
@@ -382,7 +390,7 @@ func (m *Model) openColumnSuggestions() {
 		return
 	}
 	m.sugSource = m.columns
-	m.suggestions = m.removeAlreadyUsed(matchPrefix(m.columns, word))
+	m.applySuggestionCap(m.removeAlreadyUsed(matchPrefix(m.columns, word)))
 	m.sugIdx = 0
 }
 
@@ -405,6 +413,21 @@ func (m *Model) clearSuggestions() {
 	m.suggestions = nil
 	m.sugSource = nil
 	m.sugIdx = 0
+	m.sugHidden = 0
+}
+
+// applySuggestionCap caps the visible list at maxVisibleSuggestions and
+// records how many extra matches were dropped so the view can render a
+// "+N more" hint. Call this every time we assign m.suggestions from a
+// freshly-filtered list.
+func (m *Model) applySuggestionCap(matches []string) {
+	if len(matches) > maxVisibleSuggestions {
+		m.sugHidden = len(matches) - maxVisibleSuggestions
+		m.suggestions = matches[:maxVisibleSuggestions]
+	} else {
+		m.sugHidden = 0
+		m.suggestions = matches
+	}
 }
 
 // firstWordIndex returns the byte offset of the first word-bounded
@@ -454,7 +477,7 @@ func (m *Model) refilterSuggestions() {
 	if source == nil {
 		source = m.dictionary
 	}
-	m.suggestions = m.removeAlreadyUsed(matchPrefix(source, word))
+	m.applySuggestionCap(m.removeAlreadyUsed(matchPrefix(source, word)))
 	if m.sugIdx >= len(m.suggestions) {
 		m.sugIdx = 0
 	}
@@ -462,11 +485,11 @@ func (m *Model) refilterSuggestions() {
 
 // removeAlreadyUsed drops suggestions that would duplicate a column
 // already present in the SELECT list — i.e. we only filter when the
-// caret sits between "SELECT" and "FROM". Everywhere else (WHERE,
-// GROUP BY, ORDER BY, JOIN...ON, ...) reusing a column name is
-// normal SQL and shouldn't be hidden. Filtering is case-insensitive.
+// caret sits inside the SELECT column list. Everywhere else (WHERE,
+// GROUP BY, ORDER BY, JOIN...ON, ...) reusing a column name is normal
+// SQL and shouldn't be hidden. Filtering is case-insensitive.
 func (m *Model) removeAlreadyUsed(suggestions []string) []string {
-	if len(suggestions) == 0 || !m.inSelectList() {
+	if len(suggestions) == 0 || sqlctx.At(m.flatText(), m.caretByteOffset()) != sqlctx.ColumnList {
 		return suggestions
 	}
 	text := strings.ToLower(strings.Join(m.lines, "\n"))
@@ -479,45 +502,26 @@ func (m *Model) removeAlreadyUsed(suggestions []string) []string {
 	return out
 }
 
-// inSelectList reports whether the caret sits between the most recent
-// "SELECT" keyword and its matching "FROM". Used to gate the
-// already-used filter so it only applies in the SELECT column list.
-func (m *Model) inSelectList() bool {
-	text := strings.Join(m.lines, "\n")
-	offset := 0
-	for i := 0; i < m.row; i++ {
-		offset += len(m.lines[i]) + 1
-	}
-	offset += m.col
-
-	lower := strings.ToLower(text)
-	selectIdx := lastWordIndex(lower, "select", offset)
-	if selectIdx < 0 {
-		return false
-	}
-	after := selectIdx + len("select")
-	if offset < after {
-		return false
-	}
-	fromIdx := firstWordIndex(lower, "from", after)
-	if fromIdx < 0 {
-		return true // no FROM yet — still in the column list
-	}
-	return offset <= fromIdx
+// flatText joins the editor lines with '\n' for context analysis.
+func (m *Model) flatText() string {
+	return strings.Join(m.lines, "\n")
 }
 
-// lastWordIndex returns the byte offset of the last word-bounded
-// occurrence of needle in haystack[:upto], or -1 if none.
-func lastWordIndex(haystack, needle string, upto int) int {
-	if upto > len(haystack) {
-		upto = len(haystack)
+// caretByteOffset returns the byte offset into flatText() where the
+// caret sits. Each newline counts as one byte (the joiner).
+func (m *Model) caretByteOffset() int {
+	off := 0
+	for i := 0; i < m.row; i++ {
+		off += len(m.lines[i]) + 1
 	}
-	for i := upto - len(needle); i >= 0; i-- {
-		if haystack[i:i+len(needle)] == needle && isWordBoundary(haystack, i, i+len(needle)) {
-			return i
-		}
+	// m.col is rune-indexed within the current line — convert to bytes.
+	line := m.lines[m.row]
+	if m.col >= len([]rune(line)) {
+		off += len(line)
+	} else {
+		off += len(string([]rune(line)[:m.col]))
 	}
-	return -1
+	return off
 }
 
 func matchPrefix(dict []string, prefix string) []string {
@@ -527,9 +531,6 @@ func matchPrefix(dict []string, prefix string) []string {
 		if strings.HasPrefix(strings.ToLower(w), lower) && !strings.EqualFold(w, prefix) {
 			out = append(out, w)
 		}
-	}
-	if len(out) > 8 {
-		out = out[:8]
 	}
 	return out
 }
@@ -613,5 +614,9 @@ func (m Model) suggestionsView() string {
 			parts[i] = sugStyle.Render(cell)
 		}
 	}
-	return sugStyle.Render("↹ ←/→ ⏎") + strings.Join(parts, " ")
+	row := sugStyle.Render("↹ ←/→ ⏎") + strings.Join(parts, " ")
+	if m.sugHidden > 0 {
+		row += sugStyle.Render(" +" + strconv.Itoa(m.sugHidden) + " more")
+	}
+	return row
 }

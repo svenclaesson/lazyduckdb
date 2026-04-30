@@ -111,6 +111,69 @@ func TestAutoTriggerInsideSelectFrom(t *testing.T) {
 	}
 }
 
+func TestNoAutoTriggerAfterTable(t *testing.T) {
+	// `FROM t ` is a table position — typing a word-rune there must
+	// not pop the column list. Used to: that's the user's main bug.
+	m := New()
+	m.SetColumns([]string{"customer_id", "customer_name"})
+	m.Focus()
+	m.SetValue("SELECT * FROM t ")
+	m.row, m.col = 0, len("SELECT * FROM t ")
+	m.HandleKey("w")
+	if len(m.suggestions) != 0 {
+		t.Fatalf("no suggestions expected after 'FROM t ', got %v", m.suggestions)
+	}
+}
+
+func TestNoAutoTriggerInSelectWithoutComma(t *testing.T) {
+	// `SELECT id ` already has a column; the next word without a
+	// comma is not another column.
+	m := New()
+	m.SetColumns([]string{"customer_id", "customer_name"})
+	m.Focus()
+	m.SetValue("SELECT id ")
+	m.row, m.col = 0, len("SELECT id ")
+	m.HandleKey("c")
+	if len(m.suggestions) != 0 {
+		t.Fatalf("no suggestions expected without preceding comma, got %v", m.suggestions)
+	}
+}
+
+func TestSuggestionListIsCappedWithHint(t *testing.T) {
+	cols := []string{
+		"customer_a", "customer_b", "customer_c", "customer_d",
+		"customer_e", "customer_f", "customer_g", "customer_h",
+		"customer_i", "customer_j", "customer_k",
+	}
+	m := New()
+	m.SetColumns(cols)
+	m.Focus()
+	m.SetValue("SELECT ")
+	m.row, m.col = 0, len("SELECT ")
+	m.HandleKey("c")
+	if got := len(m.suggestions); got != 8 {
+		t.Fatalf("visible cap = 8, got %d", got)
+	}
+	if m.sugHidden != 3 {
+		t.Fatalf("expected 3 hidden, got %d", m.sugHidden)
+	}
+	if !strings.Contains(m.suggestionsView(), "+3 more") {
+		t.Fatalf("view should mention overflow, got %q", m.suggestionsView())
+	}
+}
+
+func TestAutoTriggerInJoinOn(t *testing.T) {
+	m := New()
+	m.SetColumns([]string{"customer_id", "customer_name"})
+	m.Focus()
+	m.SetValue("SELECT * FROM t JOIN x ON ")
+	m.row, m.col = 0, len("SELECT * FROM t JOIN x ON ")
+	m.HandleKey("c")
+	if len(m.suggestions) != 2 {
+		t.Fatalf("expected column list in JOIN ON, got %v", m.suggestions)
+	}
+}
+
 func TestAutoTriggerFiresInWhereClause(t *testing.T) {
 	m := New()
 	m.SetColumns([]string{"customer_id", "customer_name"})
@@ -219,7 +282,9 @@ func TestTypingNarrowsOpenSuggestionList(t *testing.T) {
 	m := New()
 	m.SetColumns([]string{"customer_id", "customer_name", "order_id", "order_date"})
 	m.Focus()
-	// Auto-trigger opens as soon as a word-rune is typed.
+	// Auto-trigger only fires in column positions, so seed a SELECT.
+	m.SetValue("SELECT ")
+	m.row, m.col = 0, len("SELECT ")
 	m.HandleKey("c")
 	if len(m.suggestions) != 2 {
 		t.Fatalf("expected 2 customer_* entries after 'c', got %v", m.suggestions)
