@@ -105,11 +105,12 @@ func describe(db *sql.DB) ([]Column, error) {
 }
 
 // Query runs a SQL statement and materializes up to `limit` rows. A
-// limit of 0 means "no cap — read everything". Regardless of the cap
-// we also run a separate COUNT(*) pass so the caller knows the full
-// size of the result. The count is best-effort: if the query isn't
-// wrappable as a subquery (EXPLAIN, DDL, etc.), TotalRows is set to
-// -1 and no error is raised.
+// limit of 0 means "no cap — read everything". When the cap was hit
+// we run a separate COUNT(*) pass so the caller knows the full size
+// of the result; otherwise the natural exhaustion of the iterator is
+// the true count and we skip the second pass entirely. The count is
+// best-effort: if the query isn't wrappable as a subquery (EXPLAIN,
+// DDL, etc.), TotalRows is set to -1 and no error is raised.
 func (s *Session) Query(sqlText string, limit int) (*ResultSet, error) {
 	rows, err := s.db.Query(sqlText)
 	if err != nil {
@@ -124,8 +125,10 @@ func (s *Session) Query(sqlText string, limit int) (*ResultSet, error) {
 
 	rs := &ResultSet{Columns: cols, TotalRows: -1}
 	read := 0
+	hitLimit := false
 	for rows.Next() {
 		if limit > 0 && read >= limit {
+			hitLimit = true
 			break
 		}
 		holders := make([]any, len(cols))
@@ -147,8 +150,18 @@ func (s *Session) Query(sqlText string, limit int) (*ResultSet, error) {
 		return nil, err
 	}
 
-	// Best-effort total-row count. Safe to ignore errors — not every
-	// statement is a SELECT we can wrap in a subquery.
+	// If we drained the iterator naturally, `read` is the exact total
+	// — no need to re-execute the (potentially expensive) user query
+	// just to count its output. Only when we broke early because of
+	// the cap do we fall back to the COUNT(*) wrap.
+	if !hitLimit {
+		rs.TotalRows = read
+		return rs, nil
+	}
+	// Close the open rows first so countRows doesn't have to compete
+	// with us for a connection (and so it isn't holding two cursors
+	// open against the same db when DuckDB picks a second pool conn).
+	rows.Close()
 	if total, err := s.countRows(sqlText); err == nil {
 		rs.TotalRows = total
 	}
