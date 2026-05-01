@@ -401,7 +401,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // display. The TotalRows field on the result set still reports the
 // true count so the user knows what's hidden. Excel export re-runs
 // the query with no cap so the exported sheet is complete.
-const displayLimit = 100
+const displayLimit = 1000
 
 func (m Model) runQueryCmd(gen int) tea.Cmd {
 	sql := strings.TrimSpace(m.editor.Value())
@@ -475,7 +475,7 @@ func (m Model) exportCmd(gen int) tea.Cmd {
 		}
 	}
 	// Re-run the query without a row cap so the exported Excel sheet
-	// contains the full result set, not just the 100 rows on screen.
+	// contains the full result set, not just the displayLimit rows on screen.
 	return func() tea.Msg {
 		rs, err := m.session.Query(sql, 0)
 		if err != nil {
