@@ -380,14 +380,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.editor.HandleKey(key)
 		}
 	} else {
+		// Same dispatch rule as the editor branch above: printable text
+		// (msg.Text non-empty) routes to HandleText so the search prompt
+		// can ingest spaces and other printables; everything else
+		// (arrows, esc, enter, backspace, ...) routes to HandleKey.
+		// Doing both unconditionally would risk double-processing once
+		// HandleKey grows a printable case.
 		if msg.Text != "" {
 			for _, r := range msg.Text {
-				if m.results.HandleText(string(r)) {
-					continue
-				}
+				m.results.HandleText(string(r))
 			}
+		} else {
+			m.results.HandleKey(key)
 		}
-		m.results.HandleKey(key)
 	}
 	return m, nil
 }
