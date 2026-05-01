@@ -38,6 +38,12 @@ type Model struct {
 	// between editor (show run commands) and results (show scroll hints).
 	lastResult *duck.ResultSet
 
+	// queryGen / exportGen tag every in-flight async command so a slow
+	// run can't clobber a faster follow-up. Each new submit bumps its
+	// counter; stale messages whose gen doesn't match are discarded.
+	queryGen  int
+	exportGen int
+
 	width  int
 	height int
 }
@@ -159,11 +165,13 @@ func (m Model) footer() string {
 // --- Update ---
 
 type queryResultMsg struct {
+	gen int
 	rs  *duck.ResultSet
 	err error
 }
 
 type exportResultMsg struct {
+	gen  int
 	path string
 	note string
 	err  error
@@ -183,6 +191,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case queryResultMsg:
+		// Drop stale results from a prior submit that's been
+		// superseded — otherwise a slow query landing after a fast
+		// follow-up would clobber the displayed table.
+		if msg.gen != m.queryGen {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.status = "error: " + msg.err.Error()
 			return m, nil
@@ -197,6 +211,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case exportResultMsg:
+		if msg.gen != m.exportGen {
+			return m, nil
+		}
 		switch {
 		case msg.err != nil && msg.path != "":
 			m.status = "exported with warning → " + msg.path + " (" + msg.err.Error() + ")"
@@ -318,9 +335,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.keymap.Matches(key, m.keymap.Quit):
 		return m, tea.Quit
 	case m.keymap.Matches(key, m.keymap.RunQuery):
-		return m, m.runQueryCmd()
+		m.queryGen++
+		return m, m.runQueryCmd(m.queryGen)
 	case m.keymap.Matches(key, m.keymap.ExportExcel):
-		return m, m.exportCmd()
+		m.exportGen++
+		return m, m.exportCmd(m.exportGen)
 	case m.keymap.Matches(key, m.keymap.FocusEditor):
 		m.setFocus(focusEditor)
 		return m, nil
@@ -366,16 +385,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // the query with no cap so the exported sheet is complete.
 const displayLimit = 100
 
-func (m Model) runQueryCmd() tea.Cmd {
+func (m Model) runQueryCmd(gen int) tea.Cmd {
 	sql := strings.TrimSpace(m.editor.Value())
 	if sql == "" {
 		return func() tea.Msg {
-			return queryResultMsg{err: fmt.Errorf("empty query")}
+			return queryResultMsg{gen: gen, err: fmt.Errorf("empty query")}
 		}
 	}
 	return func() tea.Msg {
 		rs, err := m.session.Query(sql, displayLimit)
-		return queryResultMsg{rs: rs, err: err}
+		return queryResultMsg{gen: gen, rs: rs, err: err}
 	}
 }
 
@@ -430,11 +449,11 @@ func resultsHint(rs *duck.ResultSet) string {
 	return "← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all"
 }
 
-func (m Model) exportCmd() tea.Cmd {
+func (m Model) exportCmd(gen int) tea.Cmd {
 	sql := strings.TrimSpace(m.editor.Value())
 	if sql == "" {
 		return func() tea.Msg {
-			return exportResultMsg{err: fmt.Errorf("no query to export")}
+			return exportResultMsg{gen: gen, err: fmt.Errorf("no query to export")}
 		}
 	}
 	// Re-run the query without a row cap so the exported Excel sheet
@@ -442,9 +461,9 @@ func (m Model) exportCmd() tea.Cmd {
 	return func() tea.Msg {
 		rs, err := m.session.Query(sql, 0)
 		if err != nil {
-			return exportResultMsg{err: err}
+			return exportResultMsg{gen: gen, err: err}
 		}
 		path, note, err := export.ToExcel(rs.Columns, rs.Rows)
-		return exportResultMsg{path: path, note: note, err: err}
+		return exportResultMsg{gen: gen, path: path, note: note, err: err}
 	}
 }
