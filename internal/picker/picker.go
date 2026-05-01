@@ -1,6 +1,7 @@
 // Package picker is a tiny Bubble Tea program that lets the user
 // choose a parquet file from the current directory before the main
-// app starts.
+// app starts. The Model type is also embedded inside the main app
+// to drive the in-app "attach another file" flow.
 package picker
 
 import (
@@ -37,20 +38,23 @@ func FindParquetFiles(dir string) ([]string, error) {
 // Pick shows an interactive list and returns the selected path.
 // Returns "" with a nil error if the user aborted.
 func Pick(files []string) (string, error) {
-	m := newModel(files)
+	m := New(files)
 	p := tea.NewProgram(m)
 	final, err := p.Run()
 	if err != nil {
 		return "", err
 	}
-	fm := final.(model)
+	fm := final.(Model)
 	if fm.aborted || len(fm.visible) == 0 {
 		return "", nil
 	}
 	return fm.files[fm.visible[fm.cursor]], nil
 }
 
-type model struct {
+// Model is the picker state. Exported so it can be embedded inside
+// the main app and driven from there as a sub-state instead of a
+// standalone Bubble Tea program.
+type Model struct {
 	files   []string
 	visible []int // indices into files that match query (all when query == "")
 	cursor  int   // position within visible
@@ -61,17 +65,33 @@ type model struct {
 	query     string
 }
 
-func newModel(files []string) model {
-	m := model{files: files}
+// New constructs a picker for the given files. The list starts
+// unfiltered; call Update with key events to drive it.
+func New(files []string) Model {
+	m := Model{files: files}
 	return m.refilter()
 }
 
-func (m model) Init() tea.Cmd { return nil }
+// Done reports whether the user has confirmed a selection.
+func (m Model) Done() bool { return m.done }
+
+// Aborted reports whether the user dismissed the picker.
+func (m Model) Aborted() bool { return m.aborted }
+
+// Selected returns the path the cursor currently points at, or "" if
+// the visible list is empty. Stable to call before Done().
+func (m Model) Selected() string {
+	if len(m.visible) == 0 {
+		return ""
+	}
+	return m.files[m.visible[m.cursor]]
+}
+
+func (m Model) Init() tea.Cmd { return nil }
 
 // refilter recomputes visible from files and the current query, then
-// clamps the cursor. Returns a new model so it can be used in value
-// receivers without leaking a pointer.
-func (m model) refilter() model {
+// clamps the cursor.
+func (m Model) refilter() Model {
 	m.visible = m.visible[:0]
 	if m.query == "" {
 		for i := range m.files {
@@ -91,14 +111,13 @@ func (m model) refilter() model {
 	return m
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return m, nil
 	}
 	s := key.String()
 
-	// Always-on: ctrl+c aborts even while searching.
 	if s == "ctrl+c" {
 		m.aborted = true
 		return m, tea.Quit
@@ -107,8 +126,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.searching {
 		switch s {
 		case "esc":
-			// Exit search and restore the full list. A second esc
-			// (now in non-search mode) aborts — same as before.
 			m.searching = false
 			m.query = ""
 			return m.refilter(), nil
@@ -143,9 +160,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// Anything else printable extends the query. Use msg.Text so
-		// space and shifted symbols come through correctly under the
-		// Bubble Tea v2 key model.
 		if key.Text != "" {
 			m.query += key.Text
 			return m.refilter(), nil
@@ -196,7 +210,10 @@ var (
 	pickerQueryStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("220")).Padding(0, 1)
 )
 
-func (m model) View() tea.View {
+// ViewBody renders the picker as a string. The standalone View
+// wraps this in a tea.View; embedded callers (the main app) splice
+// the body straight into their own composite view.
+func (m Model) ViewBody() string {
 	var b strings.Builder
 	title := fmt.Sprintf("Select a parquet file (%d found)", len(m.files))
 	if m.searching || m.query != "" {
@@ -227,5 +244,9 @@ func (m model) View() tea.View {
 	} else {
 		b.WriteString(pickerHelpStyle.Render("↑/↓ move · / search · enter select · q/esc cancel"))
 	}
-	return tea.NewView(b.String())
+	return b.String()
+}
+
+func (m Model) View() tea.View {
+	return tea.NewView(m.ViewBody())
 }

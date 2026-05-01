@@ -11,12 +11,27 @@ import (
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
-// Session is an in-memory DuckDB connection with a single parquet file
-// exposed as a view named "t".
+// Session is an in-memory DuckDB connection with one or more parquet
+// files exposed as views t1, t2, ... The first source is also aliased
+// as plain "t" so the default `SELECT * FROM t` keeps working when
+// only one file is loaded.
 type Session struct {
-	db          *sql.DB
+	db      *sql.DB
+	Sources []Source
+
+	// ParquetPath / Columns are kept for backward compatibility with
+	// callers that pre-date multi-source support. They mirror the
+	// first attached source.
 	ParquetPath string
 	Columns     []Column
+}
+
+// Source is a single parquet file mapped to a view inside the
+// session. View is the SQL identifier (t1, t2, ...).
+type Source struct {
+	View    string
+	Path    string
+	Columns []Column
 }
 
 type Column struct {
@@ -39,32 +54,63 @@ type ResultSet struct {
 	TotalRows int
 }
 
-// Open loads the parquet file and introspects its schema.
+// Open loads the parquet file as views "t1" and "t" (alias) and
+// introspects its schema.
 func Open(parquetPath string) (*Session, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
-	// Quoting single quotes in the path avoids injection on exotic filenames.
 	escaped := strings.ReplaceAll(parquetPath, "'", "''")
-	createView := fmt.Sprintf("CREATE VIEW t AS SELECT * FROM read_parquet('%s')", escaped)
-	if _, err := db.Exec(createView); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("read parquet: %w", err)
+	// "t1" is the canonical name; "t" is a one-source convenience
+	// alias so the default "SELECT * FROM t" template keeps working.
+	for _, view := range []string{"t1", "t"} {
+		stmt := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet('%s')", view, escaped)
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("read parquet: %w", err)
+		}
 	}
 
-	cols, err := describe(db)
+	cols, err := describe(db, "t1")
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	return &Session{db: db, ParquetPath: parquetPath, Columns: cols}, nil
+	src := Source{View: "t1", Path: parquetPath, Columns: cols}
+	return &Session{
+		db:          db,
+		Sources:     []Source{src},
+		ParquetPath: parquetPath,
+		Columns:     cols,
+	}, nil
 }
 
-func describe(db *sql.DB) ([]Column, error) {
-	rows, err := db.Query("DESCRIBE SELECT * FROM t")
+// Attach adds another parquet under the next available tN view name
+// and refreshes the session's column metadata. Returns the view name
+// it was bound to, or an error if the path can't be opened.
+func (s *Session) Attach(parquetPath string) (string, error) {
+	view := fmt.Sprintf("t%d", len(s.Sources)+1)
+	escaped := strings.ReplaceAll(parquetPath, "'", "''")
+	stmt := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet('%s')", view, escaped)
+	if _, err := s.db.Exec(stmt); err != nil {
+		return "", fmt.Errorf("attach %s: %w", parquetPath, err)
+	}
+	cols, err := describe(s.db, view)
+	if err != nil {
+		// Best effort: leave the view in place but report the error
+		// — describe failure usually means the file is unreadable,
+		// which the user will discover the moment they query.
+		return view, err
+	}
+	s.Sources = append(s.Sources, Source{View: view, Path: parquetPath, Columns: cols})
+	return view, nil
+}
+
+func describe(db *sql.DB, view string) ([]Column, error) {
+	rows, err := db.Query("DESCRIBE SELECT * FROM " + view)
 	if err != nil {
 		return nil, fmt.Errorf("describe: %w", err)
 	}
@@ -216,12 +262,21 @@ func (s *Session) Close() error {
 	return s.db.Close()
 }
 
-// ColumnNames returns just the column identifiers — useful for the
-// autocomplete dictionary.
+// ColumnNames returns the deduped union of column identifiers across
+// every attached source — used for the autocomplete dictionary.
+// Case-insensitive dedup, original casing preserved on first sight.
 func (s *Session) ColumnNames() []string {
-	names := make([]string, len(s.Columns))
-	for i, c := range s.Columns {
-		names[i] = c.Name
+	seen := make(map[string]struct{})
+	var names []string
+	for _, src := range s.Sources {
+		for _, c := range src.Columns {
+			k := strings.ToLower(c.Name)
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			names = append(names, c.Name)
+		}
 	}
 	return names
 }

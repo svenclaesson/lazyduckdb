@@ -4,6 +4,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/svenclaesson/lazyduckdb/internal/editor"
 	"github.com/svenclaesson/lazyduckdb/internal/export"
 	"github.com/svenclaesson/lazyduckdb/internal/keymap"
+	"github.com/svenclaesson/lazyduckdb/internal/picker"
 	"github.com/svenclaesson/lazyduckdb/internal/table"
 )
 
@@ -56,6 +58,11 @@ type Model struct {
 	// counter; stale messages whose gen doesn't match are discarded.
 	queryGen  int
 	exportGen int
+
+	// attacher, when non-nil, takes over the editor/results area and
+	// shows a parquet picker. The user selects a file to attach as
+	// the next tN view; cancelling drops the picker.
+	attacher *picker.Model
 
 	width  int
 	height int
@@ -127,7 +134,30 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("63")).
 			Padding(0, 1)
+	aliasNameStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("220"))
+	aliasFileStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245"))
+	aliasRowStyle = lipgloss.NewStyle().Padding(0, 1)
 )
+
+func (m Model) headerLine() string {
+	return "lazyduckdb"
+}
+
+// sourcesLine renders the attached parquets as a tN-aliased row above
+// the query editor so the user can always see which view points at
+// which file. Cols counts come from each source's own DESCRIBE.
+func (m Model) sourcesLine() string {
+	parts := make([]string, len(m.session.Sources))
+	for i, src := range m.session.Sources {
+		parts[i] = aliasNameStyle.Render(src.View) +
+			" " + aliasFileStyle.Render(fmt.Sprintf("%s (%d cols)",
+			filepath.Base(src.Path), len(src.Columns)))
+	}
+	return aliasRowStyle.Render(strings.Join(parts, "   "))
+}
 
 func (m Model) View() tea.View {
 	if m.width == 0 {
@@ -139,9 +169,7 @@ func (m Model) View() tea.View {
 	// arrives; the values the children use during HandleKey are
 	// therefore in sync with what's rendered here.
 
-	head := headerStyle.Render(
-		fmt.Sprintf("lazyduckdb  •  %s  •  %d columns",
-			filepath.Base(m.session.ParquetPath), len(m.session.Columns)))
+	head := headerStyle.Render(m.headerLine())
 
 	status := m.statusLine()
 	style := statusStyle
@@ -149,13 +177,16 @@ func (m Model) View() tea.View {
 		style = errorStyle
 	}
 
-	content := strings.Join([]string{
-		head,
-		m.editor.View(),
-		m.results.View(),
-		style.Render(status),
-		statusStyle.Render(m.footer()),
-	}, "\n")
+	var parts []string
+	if m.attacher != nil {
+		// Attach mode: replace the editor/results panes with the
+		// picker so it has room to render the file list.
+		parts = []string{head, m.sourcesLine(), m.attacher.ViewBody()}
+	} else {
+		parts = []string{head, m.sourcesLine(), m.editor.View(), m.results.View()}
+	}
+	parts = append(parts, style.Render(status), statusStyle.Render(m.footer()))
+	content := strings.Join(parts, "\n")
 
 	v := tea.NewView(content)
 	v.AltScreen = true
@@ -172,7 +203,8 @@ func (m Model) footer() string {
 	if m.focus == focusResults {
 		pane = "results"
 	}
-	return fmt.Sprintf("[%s] %sR run (→ results)  %sE excel  esc → editor  ctrl+c quit", pane, modKey(), modKey())
+	return fmt.Sprintf("[%s] %sR run (→ results)  %sE excel  %sO attach  esc → editor  ctrl+c quit",
+		pane, modKey(), modKey(), modKey())
 }
 
 // --- Update ---
@@ -344,6 +376,15 @@ func (m *Model) setFocus(f focus) {
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// Picker takes the screen when active. Ctrl+C still quits; every
+	// other key routes into the picker until it reports done/aborted.
+	if m.attacher != nil {
+		if m.keymap.Matches(key, m.keymap.Quit) {
+			return m, tea.Quit
+		}
+		return m.handleAttachKey(msg), nil
+	}
+
 	switch {
 	case m.keymap.Matches(key, m.keymap.Quit):
 		return m, tea.Quit
@@ -353,6 +394,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.keymap.Matches(key, m.keymap.ExportExcel):
 		m.exportGen++
 		return m, m.exportCmd(m.exportGen)
+	case m.keymap.Matches(key, m.keymap.OpenFile):
+		return m.openAttacher(), nil
 	case m.keymap.Matches(key, m.keymap.FocusEditor):
 		m.setFocus(focusEditor)
 		return m, nil
@@ -395,6 +438,81 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// openAttacher scans the current working directory for parquet
+// files and opens the picker. Files already attached to the session
+// are filtered out so the user can't pick the same file twice. If
+// nothing is left to attach, a status-line error is shown instead.
+func (m Model) openAttacher() Model {
+	cwd, err := os.Getwd()
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m
+	}
+	files, err := picker.FindParquetFiles(cwd)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return m
+	}
+	already := make(map[string]struct{}, len(m.session.Sources))
+	for _, src := range m.session.Sources {
+		already[src.Path] = struct{}{}
+	}
+	available := files[:0:len(files)]
+	for _, f := range files {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			abs = f
+		}
+		if _, dup := already[abs]; !dup {
+			available = append(available, f)
+		}
+	}
+	if len(available) == 0 {
+		m.status = fmt.Sprintf("error: no other parquet files in %s", cwd)
+		return m
+	}
+	p := picker.New(available)
+	m.attacher = &p
+	m.status = ""
+	return m
+}
+
+// handleAttachKey forwards the key to the embedded picker, then
+// inspects its post-update state. A done picker triggers the attach
+// + dictionary refresh; an aborted picker just clears the overlay.
+// We discard the picker's tea.Cmd because its internal flow returns
+// tea.Quit on done/aborted — not what we want when embedded.
+func (m Model) handleAttachKey(msg tea.KeyPressMsg) Model {
+	upd, _ := m.attacher.Update(msg)
+	p := upd.(picker.Model)
+	m.attacher = &p
+
+	switch {
+	case p.Aborted():
+		m.attacher = nil
+	case p.Done():
+		path := p.Selected()
+		m.attacher = nil
+		if path == "" {
+			return m
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		view, err := m.session.Attach(path)
+		if err != nil {
+			m.status = "error: " + err.Error()
+			return m
+		}
+		// Refresh the editor's autocomplete dictionary against the new
+		// union of columns. Existing query text is left alone.
+		m.editor.SetDictionary(buildDictionary(m.session.ColumnNames()))
+		m.editor.SetColumns(m.session.ColumnNames())
+		m.status = fmt.Sprintf("attached %s as %s", filepath.Base(path), view)
+	}
+	return m
 }
 
 // displayLimit caps the number of rows we materialize for on-screen

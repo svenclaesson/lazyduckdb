@@ -6,6 +6,7 @@ type Keymap struct {
 	RunQuery    []string
 	ExportExcel []string
 	FocusEditor []string
+	OpenFile    []string
 	Quit        []string
 	Help        []string
 }
@@ -28,6 +29,7 @@ func Default() Keymap {
 		RunQuery:    []string{"super+r", "ctrl+r"},
 		ExportExcel: []string{"super+e", "ctrl+e"},
 		FocusEditor: []string{"ctrl+q"},
+		OpenFile:    []string{"super+o", "ctrl+o"},
 		Quit:        []string{"ctrl+c"},
 		Help:        []string{"ctrl+h", "f1"},
 	}
