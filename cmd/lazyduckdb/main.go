@@ -17,13 +17,15 @@ import (
 	"github.com/svenclaesson/lazyduckdb/internal/update"
 )
 
-var version = "0.1.7"
+var version = "0.1.8"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.BoolVar(showVersion, "v", false, "print version (shorthand)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s <parquet_file>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [parquet_file ...]\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "  Pass one or more parquet files; they're mounted as t1, t2, ...")
+		fmt.Fprintln(os.Stderr, "  With no arguments, a picker lists *.parquet in the current directory.")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -46,9 +48,8 @@ func main() {
 	}
 
 	args := flag.Args()
-	var absPath string
-	switch len(args) {
-	case 0:
+	var paths []string
+	if len(args) == 0 {
 		chosen, err := chooseFromCWD()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -58,29 +59,37 @@ func main() {
 			// User cancelled — exit silently, same convention as fzf.
 			return
 		}
-		absPath = chosen
-	case 1:
-		p, err := filepath.Abs(args[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "resolve path: %v\n", err)
-			os.Exit(1)
+		paths = []string{chosen}
+	} else {
+		paths = make([]string, len(args))
+		for i, a := range args {
+			p, err := filepath.Abs(a)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "resolve path %q: %v\n", a, err)
+				os.Exit(1)
+			}
+			if _, err := os.Stat(p); err != nil {
+				fmt.Fprintf(os.Stderr, "parquet file: %v\n", err)
+				os.Exit(1)
+			}
+			paths[i] = p
 		}
-		if _, err := os.Stat(p); err != nil {
-			fmt.Fprintf(os.Stderr, "parquet file: %v\n", err)
-			os.Exit(1)
-		}
-		absPath = p
-	default:
-		flag.Usage()
-		os.Exit(2)
 	}
 
-	session, err := duck.Open(absPath)
+	session, err := duck.Open(paths[0])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open: %v\n", err)
 		os.Exit(1)
 	}
 	defer session.Close()
+	for _, p := range paths[1:] {
+		view, aerr := session.Attach(p)
+		if aerr != nil {
+			fmt.Fprintf(os.Stderr, "attach %s: %v\n", p, aerr)
+			os.Exit(1)
+		}
+		_ = view
+	}
 
 	model := app.NewModel(session)
 
