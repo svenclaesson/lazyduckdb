@@ -77,8 +77,8 @@ func NewModel(session *duck.Session) Model {
 		editor:  ed,
 		results: rt,
 		focus:   focusEditor,
-		status: fmt.Sprintf("loaded %d columns from %s — %sR run (shows first %d rows), %sE export all",
-			len(session.Columns), session.ParquetPath, modKey(), displayLimit, modKey()),
+		status: fmt.Sprintf("loaded %d columns from %s",
+			len(session.Columns), session.ParquetPath),
 	}
 }
 
