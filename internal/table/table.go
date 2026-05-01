@@ -9,6 +9,7 @@ package table
 import (
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
@@ -560,26 +561,41 @@ func (m Model) pickVisibleColumns(avail int) ([]int, []int) {
 // the caller's base style so the resulting string keeps the cursor
 // row's reverse-video look on non-matching characters. The input text
 // has already been padded with padOrTruncate, so widths stay stable.
+//
+// Walks runes (not bytes) and compares with unicode.ToLower because
+// strings.ToLower is not byte-length-preserving for some characters
+// (e.g. İ U+0130 → i̇); a byte-index approach over the lowered
+// string would slice the original at misaligned offsets and emit
+// invalid UTF-8.
 func highlightMatches(text, needle string, base lipgloss.Style) string {
 	if needle == "" {
 		return base.Render(text)
 	}
-	lowerText := strings.ToLower(text)
-	lowerNeedle := strings.ToLower(needle)
+	tr := []rune(text)
+	nr := []rune(needle)
 	var b strings.Builder
-	i := 0
-	for i < len(lowerText) {
-		idx := strings.Index(lowerText[i:], lowerNeedle)
-		if idx < 0 {
-			b.WriteString(base.Render(text[i:]))
-			break
+	last := 0
+	for i := 0; i+len(nr) <= len(tr); {
+		match := true
+		for k := 0; k < len(nr); k++ {
+			if unicode.ToLower(tr[i+k]) != unicode.ToLower(nr[k]) {
+				match = false
+				break
+			}
 		}
-		if idx > 0 {
-			b.WriteString(base.Render(text[i : i+idx]))
+		if !match {
+			i++
+			continue
 		}
-		end := i + idx + len(lowerNeedle)
-		b.WriteString(matchStyle.Render(text[i+idx : end]))
-		i = end
+		if i > last {
+			b.WriteString(base.Render(string(tr[last:i])))
+		}
+		b.WriteString(matchStyle.Render(string(tr[i : i+len(nr)])))
+		i += len(nr)
+		last = i
+	}
+	if last < len(tr) {
+		b.WriteString(base.Render(string(tr[last:])))
 	}
 	return b.String()
 }
