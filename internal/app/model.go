@@ -5,6 +5,7 @@ package app
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -16,6 +17,18 @@ import (
 	"github.com/svenclaesson/lazyduckdb/internal/keymap"
 	"github.com/svenclaesson/lazyduckdb/internal/table"
 )
+
+// modKey is the platform-appropriate label for the primary modifier
+// shown in help text. macOS reaches for Cmd (⌘); Windows and Linux
+// users see "Ctrl+" instead. The actual bindings always include both
+// super+ and ctrl+ forms (see keymap.Default), so the chord works
+// everywhere — this only affects the displayed hint.
+func modKey() string {
+	if runtime.GOOS == "darwin" {
+		return "⌘"
+	}
+	return "Ctrl+"
+}
 
 type focus int
 
@@ -64,8 +77,8 @@ func NewModel(session *duck.Session) Model {
 		editor:  ed,
 		results: rt,
 		focus:   focusEditor,
-		status: fmt.Sprintf("loaded %d columns from %s — ⌘R run (shows first %d rows), ⌘E export all",
-			len(session.Columns), session.ParquetPath, displayLimit),
+		status: fmt.Sprintf("loaded %d columns from %s — %sR run (shows first %d rows), %sE export all",
+			len(session.Columns), session.ParquetPath, modKey(), displayLimit, modKey()),
 	}
 }
 
@@ -159,7 +172,7 @@ func (m Model) footer() string {
 	if m.focus == focusResults {
 		pane = "results"
 	}
-	return fmt.Sprintf("[%s] ⌘R run (→ results)  ⌘E excel  esc → editor  ctrl+c quit", pane)
+	return fmt.Sprintf("[%s] %sR run (→ results)  %sE excel  esc → editor  ctrl+c quit", pane, modKey(), modKey())
 }
 
 // --- Update ---
@@ -437,16 +450,16 @@ func formatResultStatus(rs *duck.ResultSet, f focus) string {
 
 func editorHint(rs *duck.ResultSet) string {
 	if rs.TotalRows > 0 {
-		return fmt.Sprintf("⌘R re-run · ⌘E export all %d", rs.TotalRows)
+		return fmt.Sprintf("%sR re-run · %sE export all %d", modKey(), modKey(), rs.TotalRows)
 	}
-	return "⌘R re-run · ⌘E export"
+	return fmt.Sprintf("%sR re-run · %sE export", modKey(), modKey())
 }
 
 func resultsHint(rs *duck.ResultSet) string {
 	if rs.TotalRows > 0 {
-		return fmt.Sprintf("← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all %d", rs.TotalRows)
+		return fmt.Sprintf("← →/PgUp/PgDn to scroll, esc→editor, %sE exports all %d", modKey(), rs.TotalRows)
 	}
-	return "← →/PgUp/PgDn to scroll, esc→editor, ⌘E exports all"
+	return fmt.Sprintf("← →/PgUp/PgDn to scroll, esc→editor, %sE exports all", modKey())
 }
 
 func (m Model) exportCmd(gen int) tea.Cmd {
