@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 
@@ -444,17 +445,23 @@ func firstWordIndex(haystack, needle string, from int) int {
 	return -1
 }
 
+// isWordBoundary reports whether the byte range [start,end) in s sits
+// between non-word runes. Decoding as runes (not bytes) matters: a
+// UTF-8 lead byte like 0xC3 for "ï" is not ASCII alnum, but the rune
+// it heads is a word continuation — without rune-awareness, "na"
+// would falsely match inside "naïve".
 func isWordBoundary(s string, start, end int) bool {
-	leftOK := start == 0 || !isWordByte(s[start-1])
-	rightOK := end >= len(s) || !isWordByte(s[end])
+	leftOK := true
+	if start > 0 {
+		r, _ := utf8.DecodeLastRuneInString(s[:start])
+		leftOK = !isWordRune(r)
+	}
+	rightOK := true
+	if end < len(s) {
+		r, _ := utf8.DecodeRuneInString(s[end:])
+		rightOK = !isWordRune(r)
+	}
 	return leftOK && rightOK
-}
-
-func isWordByte(b byte) bool {
-	return (b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9') ||
-		b == '_'
 }
 
 // refilterSuggestions re-runs the prefix match against the current

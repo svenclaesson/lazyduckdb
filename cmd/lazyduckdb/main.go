@@ -49,7 +49,7 @@ func main() {
 	var absPath string
 	switch len(args) {
 	case 0:
-		chosen, err := choosFromCWD()
+		chosen, err := chooseFromCWD()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -101,7 +101,7 @@ func isInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-func choosFromCWD() (string, error) {
+func chooseFromCWD() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getwd: %w", err)

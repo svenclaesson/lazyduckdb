@@ -4,6 +4,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -75,8 +76,25 @@ func buildDictionary(columns []string) []string {
 		"ON", "UNION", "DISTINCT", "HAVING", "CASE", "WHEN", "THEN", "ELSE", "END",
 		"COUNT(*)", "SUM", "AVG", "MIN", "MAX",
 	}
-	out := append([]string{}, columns...)
-	return append(out, keywords...)
+	seen := make(map[string]struct{}, len(columns)+len(keywords))
+	out := make([]string, 0, len(columns)+len(keywords))
+	for _, c := range columns {
+		k := strings.ToLower(c)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, c)
+	}
+	for _, kw := range keywords {
+		k := strings.ToLower(kw)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, kw)
+	}
+	return out
 }
 
 var (
@@ -104,7 +122,7 @@ func (m Model) View() tea.View {
 
 	head := headerStyle.Render(
 		fmt.Sprintf("lazyduckdb  •  %s  •  %d columns",
-			shortPath(m.session.ParquetPath), len(m.session.Columns)))
+			filepath.Base(m.session.ParquetPath), len(m.session.Columns)))
 
 	status := m.statusLine()
 	style := statusStyle
@@ -136,13 +154,6 @@ func (m Model) footer() string {
 		pane = "results"
 	}
 	return fmt.Sprintf("[%s] ⌘R run (→ results)  ⌘E excel  esc → editor  ctrl+c quit", pane)
-}
-
-func shortPath(p string) string {
-	if idx := strings.LastIndex(p, "/"); idx >= 0 {
-		return p[idx+1:]
-	}
-	return p
 }
 
 // --- Update ---
