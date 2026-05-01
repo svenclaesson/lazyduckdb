@@ -347,14 +347,21 @@ func (m Model) handleWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 // components. Must be called on every WindowSizeMsg so HandleKey
 // (which runs on Update's stored model, not View's transient copy)
 // sees the correct height when computing visibleDataRows.
+//
+// Vertical budget audited from the actual render:
+//
+//	header(1) + sources(1) + "Query"(1) + editor box(6=4+2) +
+//	"Results"(1) + status(1) + footer(1) + 2 results-box borders = 14
+//
+// Whatever's left we hand to the results table as its m.height.
 func (m *Model) propagateSize() {
+	const fixedRows = 14
 	editorHeight := 6
-	statusHeight := 2
-	resultsHeight := m.height - editorHeight - statusHeight - 4
+	editorInner := editorHeight - 2
+	resultsHeight := m.height - fixedRows
 	if resultsHeight < 1 {
 		resultsHeight = 1
 	}
-	editorInner := editorHeight - 2
 	if editorInner < 1 {
 		editorInner = 1
 	}
@@ -559,16 +566,13 @@ func formatResultStatus(rs *duck.ResultSet, f focus) string {
 	if f == focusResults {
 		hint = resultsHint(rs)
 	}
-	switch {
-	case rs.TotalRows < 0:
+	if rs.TotalRows < 0 {
 		return fmt.Sprintf("%d rows shown × %d cols — total unknown (non-SELECT?) — %s",
 			shown, cols, hint)
-	case rs.TotalRows <= shown:
-		return fmt.Sprintf("%d rows × %d cols — %s", shown, cols, hint)
-	default:
-		return fmt.Sprintf("showing %d of %d rows × %d cols — %s",
-			shown, rs.TotalRows, cols, hint)
 	}
+	// Always show shown / total so the user can see the result size
+	// even when the display fits within the cap (shown == total).
+	return fmt.Sprintf("%d / %d rows × %d cols — %s", shown, rs.TotalRows, cols, hint)
 }
 
 func editorHint(rs *duck.ResultSet) string {
