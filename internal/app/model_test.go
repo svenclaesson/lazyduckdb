@@ -47,6 +47,58 @@ func TestDownKeyAdvancesResultsCursor(t *testing.T) {
 	}
 }
 
+func TestEscFromEditorTogglesToResults(t *testing.T) {
+	// Issue #1: esc in the editor should flip focus to the results
+	// pane, mirroring the existing results→editor direction. The
+	// toggle is gated on having a result set loaded — without one
+	// there's nothing to scroll, so esc should be a no-op.
+	m := Model{
+		session: &duck.Session{},
+		editor:  newEditorForTest(),
+		focus:   focusEditor,
+		width:   200,
+		height:  20,
+	}
+	m.editor.Focus()
+	m.results.SetSize(200, 20)
+	m.results.SetData([]string{"c"}, [][]string{{"x"}})
+	m.lastResult = &duck.ResultSet{
+		Columns:   []string{"c"},
+		Rows:      [][]string{{"x"}},
+		TotalRows: 1,
+	}
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(Model)
+
+	if m.focus != focusResults {
+		t.Fatalf("esc in editor should switch focus to results, got %v", m.focus)
+	}
+	if !m.results.Focused() {
+		t.Fatal("results pane should be focused after esc from editor")
+	}
+}
+
+func TestEscFromEditorWithoutResultsIsNoOp(t *testing.T) {
+	// Without a loaded result set, there's nothing to scroll, so
+	// esc must not steal focus away from the editor.
+	m := Model{
+		session: &duck.Session{},
+		editor:  newEditorForTest(),
+		focus:   focusEditor,
+		width:   200,
+		height:  20,
+	}
+	m.editor.Focus()
+
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = next.(Model)
+
+	if m.focus != focusEditor {
+		t.Fatalf("esc with no results should keep focus on editor, got %v", m.focus)
+	}
+}
+
 func TestQueryResultFocusesResults(t *testing.T) {
 	m := Model{
 		session: &duck.Session{},

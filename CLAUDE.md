@@ -10,12 +10,12 @@ This is primarily a macOS app. Keybindings should feel native. Always register *
 | --- | --- |
 | Run query (auto-focuses results) | `super+r`, `ctrl+r` |
 | Export to Excel | `super+e`, `ctrl+e` |
-| Focus editor from results | `esc` (primary), `ctrl+q` (fallback) |
+| Toggle editor ↔ results | `esc` (primary), `ctrl+q` (editor-only fallback) |
 | Word left | `alt+left`, `alt+b` |
 | Word right | `alt+right`, `alt+f` |
 | Line start / end | `home`/`end` (add `ctrl+a`/`ctrl+e` if needed) |
 
-Focus model is query-driven: there is no "jump to results" shortcut. Running a query switches focus to results; Esc returns to the editor. Don't re-introduce a manual `super+t` / `ctrl+t` focus-results binding — `cmd+t` is swallowed by every macOS terminal (New Tab), and the user asked to simplify to this model.
+Focus model is query-driven: running a query auto-focuses results, and `esc` is a symmetric toggle between the two panes (issue #1). The editor→results half of the toggle is gated on a result set being loaded — without one there's nothing to scroll, so `esc` is a no-op there. Don't re-introduce a manual `super+t` / `ctrl+t` focus-results binding — `cmd+t` is swallowed by every macOS terminal (New Tab), and the toggle covers the same need with one fewer key. The editor's own `esc` handler (dismiss completion list) takes priority when a completion is open.
 
 ### Why two forms for each
 

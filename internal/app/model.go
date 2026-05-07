@@ -203,7 +203,7 @@ func (m Model) footer() string {
 	if m.focus == focusResults {
 		pane = "results"
 	}
-	return fmt.Sprintf("[%s] %sR run (→ results)  %sE excel  %sO attach  esc → editor  ctrl+c quit",
+	return fmt.Sprintf("[%s] %sR run (→ results)  %sE excel  %sO attach  esc toggles editor/results  ctrl+c quit",
 		pane, modKey(), modKey(), modKey())
 }
 
@@ -413,6 +413,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// further down.
 		m.setFocus(focusEditor)
 		return m, nil
+	case key == "esc" && m.focus == focusEditor:
+		// Symmetric toggle: esc in the editor flips focus to the
+		// results pane (issue #1). The editor itself uses esc to
+		// dismiss an open completion list — let it claim the key
+		// first, and only swap focus when there's nothing to dismiss
+		// AND a result set is actually loaded to scroll through.
+		if !m.editor.HandleKey("esc") && m.lastResult != nil {
+			m.setFocus(focusResults)
+		}
+		return m, nil
 	}
 
 	// Route to the focused pane. For both panes we prefer the raw
@@ -577,9 +587,9 @@ func formatResultStatus(rs *duck.ResultSet, f focus) string {
 
 func editorHint(rs *duck.ResultSet) string {
 	if rs.TotalRows > 0 {
-		return fmt.Sprintf("%sR re-run · %sE export all %d", modKey(), modKey(), rs.TotalRows)
+		return fmt.Sprintf("%sR re-run · %sE export all %d · esc→results", modKey(), modKey(), rs.TotalRows)
 	}
-	return fmt.Sprintf("%sR re-run · %sE export", modKey(), modKey())
+	return fmt.Sprintf("%sR re-run · %sE export · esc→results", modKey(), modKey())
 }
 
 func resultsHint(rs *duck.ResultSet) string {
