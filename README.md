@@ -86,15 +86,17 @@ lazyduckdb targets macOS and registers both Cmd (`super`) and Ctrl forms of ever
 
 | Action | Keys |
 | --- | --- |
-| Run query | `⌘R` / `Ctrl+R` |
+| Run query (auto-focuses results) | `⌘R` / `Ctrl+R` |
 | Export to Excel | `⌘E` / `Ctrl+E` |
-| Focus editor | `⌘Q` / `Ctrl+Q` |
-| Focus results | `⌘T` / `Ctrl+T` |
+| Attach another parquet (as `t2`, `t3`, …) | `⌘O` / `Ctrl+O` |
+| Toggle editor ↔ results | `Esc` (or `Ctrl+Q` from results) |
+| Search inside results | `/` (Enter for next match, `Esc` to exit) |
 | Word left / right | `⌥←` / `⌥→` (or `⌥B` / `⌥F`) |
 | Line start / end | `Home` / `End` |
+| Help | `Ctrl+H` / `F1` |
 | Quit | `Ctrl+C` |
 
-If `⌘`-chords don't work in your terminal, fall back to the `Ctrl` form — or enable the Kitty keyboard protocol (Ghostty, Kitty, WezTerm, and recent iTerm2 support it).
+If `⌘`-chords don't work in your terminal, fall back to the `Ctrl` form — or enable the Kitty keyboard protocol (Ghostty, Kitty, WezTerm, and recent iTerm2 support it). `⌘Q` is intentionally unbound because macOS reserves it for "Quit Application" before any terminal app can see it.
 
 ## Releases
 
