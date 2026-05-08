@@ -142,7 +142,11 @@ func openFile(path string) error {
 	case "darwin":
 		cmd = exec.Command("open", path)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+		// `cmd /c start "" "<path>"` uses the shell's file-association
+		// lookup, which honors Excel as the registered .xlsx handler.
+		// The empty "" is the window title `start` would otherwise
+		// consume from the first quoted argument.
+		cmd = exec.Command("cmd", "/c", "start", "", path)
 	default:
 		cmd = exec.Command("xdg-open", path)
 	}
