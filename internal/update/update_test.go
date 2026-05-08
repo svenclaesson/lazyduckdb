@@ -23,7 +23,7 @@ func TestNewerSemver(t *testing.T) {
 
 func TestPromptTextMentionsCommandAndVersions(t *testing.T) {
 	got := PromptText("v0.2.0", "0.1")
-	for _, want := range []string{"v0.2.0", "v0.1", InstallCommand, "press enter", "yes"} {
+	for _, want := range []string{"v0.2.0", "v0.1", "go install github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@v0.2.0", "press enter", "yes"} {
 		if !contains(got, want) {
 			t.Errorf("PromptText missing %q in:\n%s", want, got)
 		}

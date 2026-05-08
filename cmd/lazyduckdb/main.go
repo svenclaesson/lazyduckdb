@@ -48,7 +48,7 @@ func main() {
 			fmt.Print(update.PromptText(r.LatestTag, version))
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			if strings.EqualFold(strings.TrimSpace(line), "yes") {
-				if err := installAndRelaunch(); err != nil {
+				if err := installAndRelaunch(r.LatestTag); err != nil {
 					// Print and continue — we'd rather launch the old
 					// version than refuse to start the app at all.
 					fmt.Fprintf(os.Stderr, "install failed: %v\nstarting current version...\n", err)
@@ -147,15 +147,15 @@ func main() {
 	}
 }
 
-// installAndRelaunch runs `go install ...@latest` and then exec's
+// installAndRelaunch runs `go install ...@<tag>` and then exec's
 // the freshly-installed binary in place of this process, preserving
-// argv so the user lands in the same state they asked for. The Go
-// toolchain has up to a few minutes of latency between a `gh
-// release` and the proxy serving the new module version; the install
-// itself enforces its own timeout, but we leave the parent context
-// uncancelled so a slow download still completes.
-func installAndRelaunch() error {
-	bin, err := update.Install(context.Background())
+// argv so the user lands in the same state they asked for. We pin
+// to the exact tag we just resolved from the GitHub releases API
+// instead of @latest because the module proxy's @latest index can
+// lag a fresh release by minutes, but explicit-version fetches are
+// resolved on demand and work immediately.
+func installAndRelaunch(tag string) error {
+	bin, err := update.Install(context.Background(), tag)
 	if err != nil {
 		return err
 	}

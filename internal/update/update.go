@@ -21,10 +21,6 @@ import (
 
 const releasesURL = "https://api.github.com/repos/svenclaesson/lazyduckdb/releases/latest"
 
-// InstallCommand is what the user pastes to upgrade. Centralized so
-// the README and the prompt can't drift apart.
-const InstallCommand = "go install github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@latest"
-
 // Result describes the outcome of a release check. Available is true
 // only when LatestTag is strictly newer than the running version.
 type Result struct {
@@ -122,26 +118,46 @@ func parseVersion(s string) ([]int, bool) {
 
 // PromptText is the message shown to the user when an update is
 // available. Pulled out so it can be unit-tested without touching
-// stdin/stdout.
+// stdin/stdout. The displayed upgrade command is pinned to the
+// resolved tag rather than @latest so a manual copy-paste works
+// immediately — the Go module proxy's @latest index can lag the
+// GitHub release by minutes, but explicit-version fetches are
+// resolved on demand.
 func PromptText(latest, current string) string {
 	if !strings.HasPrefix(latest, "v") {
 		latest = "v" + latest
 	}
 	return fmt.Sprintf("lazyduckdb %s is available (you have v%s).\n  upgrade: %s\n  type yes to install now, or press enter to skip and continue: ",
-		latest, strings.TrimPrefix(current, "v"), InstallCommand)
+		latest, strings.TrimPrefix(current, "v"), installCommandFor(latest))
 }
 
-// Install runs InstallCommand, streaming its stdout/stderr to the
-// caller's terminal so the user sees `go install` progress. Returns
-// the path to the freshly-installed binary on success — that's the
-// one main.go exec's into so the new version takes over without a
-// manual relaunch.
-func Install(ctx context.Context) (string, error) {
+// installCommandFor returns the version-pinned go install command
+// for tag. tag is expected to start with "v".
+func installCommandFor(tag string) string {
+	return "go install github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@" + tag
+}
+
+// Install runs `go install ...@<version>`, streaming its stdout/stderr
+// to the caller's terminal so the user sees download progress. Pins
+// to the explicit version (not @latest) because the module proxy's
+// @latest index lags behind a freshly-pushed tag — the user just
+// resolved <version> from the GitHub releases API moments earlier,
+// so we know exactly what to ask for. Returns the path to the
+// freshly-installed binary on success — that's the one main.go
+// exec's into so the new version takes over without a manual
+// relaunch.
+func Install(ctx context.Context, version string) (string, error) {
+	if version == "" {
+		return "", errors.New("update.Install: empty version")
+	}
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
 	gobin, err := goBinDir(ctx)
 	if err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, "go", "install", "github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@latest")
+	cmd := exec.CommandContext(ctx, "go", "install", "github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@"+version)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
