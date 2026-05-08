@@ -2,6 +2,7 @@ package duck
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,57 @@ func TestFormatFloat(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("formatFloat(%v) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestIsGlob(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"foo.parquet", false},
+		{"/abs/path/to/foo.parquet", false},
+		{"*.parquet", true},
+		{"data/*.parquet", true},
+		{"test_?.parquet", true},
+		{"data[0-9].parquet", true},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := IsGlob(tc.in); got != tc.want {
+			t.Errorf("IsGlob(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1024, "1.0 KiB"},
+		{1536, "1.5 KiB"},
+		{1024 * 1024, "1.0 MiB"},
+		{10 * 1024 * 1024 * 1024, "10.0 GiB"},
+	}
+	for _, tc := range cases {
+		if got := humanBytes(tc.in); got != tc.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCheckGroupSizeFileCount(t *testing.T) {
+	t.Setenv("LAZYDUCKDB_GROUP_MAX_FILES", "2")
+	files := []string{"a.parquet", "b.parquet", "c.parquet"}
+	err := CheckGroupSize(files)
+	if err == nil {
+		t.Fatal("expected error for exceeding file count, got nil")
+	}
+	if !strings.Contains(err.Error(), "3 files") {
+		t.Errorf("error should mention actual count: %v", err)
 	}
 }
 

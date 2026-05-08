@@ -140,6 +140,16 @@ var (
 	aliasFileStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("245"))
 	aliasRowStyle = lipgloss.NewStyle().Padding(0, 1)
+	// Glob-backed sources are visually louder than single files so
+	// the user can't miss that a group of files is currently mounted
+	// under that view alias. Distinct color + bold, plus a leading
+	// glyph that reads as "many → one".
+	aliasGlobStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("212"))
+	aliasGlobCountStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("213"))
 )
 
 func (m Model) headerLine() string {
@@ -148,10 +158,20 @@ func (m Model) headerLine() string {
 
 // sourcesLine renders the attached parquets as a tN-aliased row above
 // the query editor so the user can always see which view points at
-// which file. Cols counts come from each source's own DESCRIBE.
+// which file (or group). Single-file sources show the basename and
+// column count; glob-backed groups show the pattern, file count, and
+// column count, in a distinct style so a multi-file mount is hard to
+// miss. Cols counts come from each source's own DESCRIBE.
 func (m Model) sourcesLine() string {
 	parts := make([]string, len(m.session.Sources))
 	for i, src := range m.session.Sources {
+		if src.IsGroup() {
+			parts[i] = aliasNameStyle.Render(src.View) + " " +
+				aliasGlobStyle.Render("⊕ "+filepath.Base(src.Glob)) + " " +
+				aliasGlobCountStyle.Render(fmt.Sprintf("(%d files, %d cols)",
+					len(src.Files), len(src.Columns)))
+			continue
+		}
 		parts[i] = aliasNameStyle.Render(src.View) +
 			" " + aliasFileStyle.Render(fmt.Sprintf("%s (%d cols)",
 			filepath.Base(src.Path), len(src.Columns)))
@@ -511,14 +531,25 @@ func (m Model) handleAttachKey(msg tea.KeyPressMsg) Model {
 		m.attacher = nil
 	case p.Done():
 		path := p.Selected()
+		group := p.SelectedFiles()
 		m.attacher = nil
 		if path == "" {
 			return m
 		}
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
+		var (
+			view string
+			err  error
+		)
+		if len(group) > 0 {
+			// Group commit — path is the display label (e.g. the
+			// glob pattern), group holds the resolved file list.
+			view, err = m.session.AttachGroup(path, group)
+		} else {
+			if abs, aerr := filepath.Abs(path); aerr == nil {
+				path = abs
+			}
+			view, err = m.session.Attach(path)
 		}
-		view, err := m.session.Attach(path)
 		if err != nil {
 			m.status = "error: " + err.Error()
 			return m
@@ -527,7 +558,11 @@ func (m Model) handleAttachKey(msg tea.KeyPressMsg) Model {
 		// union of columns. Existing query text is left alone.
 		m.editor.SetDictionary(buildDictionary(m.session.ColumnNames()))
 		m.editor.SetColumns(m.session.ColumnNames())
-		m.status = fmt.Sprintf("attached %s as %s", filepath.Base(path), view)
+		if len(group) > 0 {
+			m.status = fmt.Sprintf("attached %d files (%s) as %s", len(group), path, view)
+		} else {
+			m.status = fmt.Sprintf("attached %s as %s", filepath.Base(path), view)
+		}
 	}
 	return m
 }

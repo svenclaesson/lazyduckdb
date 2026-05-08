@@ -5,10 +5,32 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	_ "github.com/marcboeker/go-duckdb/v2"
+)
+
+// Group-attach guard rails. These cap how much parquet a single
+// grouped mount can pull in, so a too-eager wildcard (`*` against a
+// directory full of large files) fails fast with a clear message
+// instead of silently dragging the host into swap. Both defaults can
+// be overridden per-run via env vars — the user has already opted
+// into "I know what I'm doing" by setting them.
+//
+//   LAZYDUCKDB_GROUP_MAX_FILES — int, default 500
+//   LAZYDUCKDB_GROUP_MAX_BYTES — bytes, default 10 GiB
+//
+// The byte cap is on-disk parquet size summed across the group, not
+// in-memory expanded size. Compressed columnar data routinely
+// expands 5-10× when materialized, which is why the default is
+// deliberately conservative.
+const (
+	defaultGroupMaxFiles = 500
+	defaultGroupMaxBytes = 10 * 1024 * 1024 * 1024 // 10 GiB
 )
 
 // Session is an in-memory DuckDB connection with one or more parquet
@@ -26,12 +48,34 @@ type Session struct {
 	Columns     []Column
 }
 
-// Source is a single parquet file mapped to a view inside the
-// session. View is the SQL identifier (t1, t2, ...).
+// Source is a single parquet file (or glob-matched group of files)
+// mapped to a view inside the session. View is the SQL identifier
+// (t1, t2, ...). For a single-file source Path is the absolute path
+// and Files/Glob are empty. For a globbed source Path is the glob
+// pattern (also stored in Glob), and Files lists every parquet the
+// glob expanded to at attach time.
 type Source struct {
 	View    string
 	Path    string
 	Columns []Column
+
+	// Glob is the original glob pattern when this source was attached
+	// via wildcard (e.g. "*test*.parquet"); empty for single-file sources.
+	Glob string
+	// Files is the expansion of Glob at attach time. Empty for
+	// single-file sources. Used by the UI to show the file count.
+	Files []string
+}
+
+// IsGroup reports whether this source is a glob-backed union of
+// multiple parquet files rather than a single file.
+func (s Source) IsGroup() bool { return s.Glob != "" }
+
+// IsGlob reports whether the path contains shell-glob metacharacters.
+// We use this to decide between read_parquet('one.parquet') and the
+// union form read_parquet('pattern', union_by_name=true, filename=true).
+func IsGlob(path string) bool {
+	return strings.ContainsAny(path, "*?[")
 }
 
 type Column struct {
@@ -54,59 +98,252 @@ type ResultSet struct {
 	TotalRows int
 }
 
-// Open loads the parquet file as views "t1" and "t" (alias) and
-// introspects its schema.
+// Open loads the parquet file (or glob) as views "t1" and "t" (alias)
+// and introspects its schema. When parquetPath contains glob meta the
+// view is created via read_parquet('<glob>', union_by_name=true,
+// filename=true) so heterogeneous schemas merge gracefully and each
+// row carries its source filename.
 func Open(parquetPath string) (*Session, error) {
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 
-	escaped := strings.ReplaceAll(parquetPath, "'", "''")
-	// "t1" is the canonical name; "t" is a one-source convenience
-	// alias so the default "SELECT * FROM t" template keeps working.
-	for _, view := range []string{"t1", "t"} {
-		stmt := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet('%s')", view, escaped)
-		if _, err := db.Exec(stmt); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("read parquet: %w", err)
-		}
-	}
-
-	cols, err := describe(db, "t1")
+	src, err := createSourceView(db, "t1", parquetPath)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	// "t" is a one-source convenience alias so the default
+	// "SELECT * FROM t" template keeps working.
+	if _, err := db.Exec(buildReadParquetView("t", parquetPath)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("read parquet: %w", err)
+	}
 
-	src := Source{View: "t1", Path: parquetPath, Columns: cols}
 	return &Session{
 		db:          db,
 		Sources:     []Source{src},
 		ParquetPath: parquetPath,
-		Columns:     cols,
+		Columns:     src.Columns,
 	}, nil
 }
 
-// Attach adds another parquet under the next available tN view name
-// and refreshes the session's column metadata. Returns the view name
-// it was bound to, or an error if the path can't be opened.
+// Attach adds another parquet (or parquet glob) under the next
+// available tN view name and refreshes the session's column metadata.
+// Returns the view name it was bound to, or an error if the path
+// can't be opened.
 func (s *Session) Attach(parquetPath string) (string, error) {
 	view := fmt.Sprintf("t%d", len(s.Sources)+1)
-	escaped := strings.ReplaceAll(parquetPath, "'", "''")
-	stmt := fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet('%s')", view, escaped)
-	if _, err := s.db.Exec(stmt); err != nil {
-		return "", fmt.Errorf("attach %s: %w", parquetPath, err)
+	src, err := createSourceView(s.db, view, parquetPath)
+	if err != nil {
+		return "", err
 	}
-	cols, err := describe(s.db, view)
+	s.Sources = append(s.Sources, src)
+	return view, nil
+}
+
+// OpenGroup loads an explicit list of parquet files as a single
+// unioned view, using `label` as the display path (e.g. the glob
+// pattern that produced the list). Use this instead of Open when
+// you already know the resolved file list — it avoids any glob
+// case-sensitivity / cwd-resolution surprises since the file paths
+// are passed verbatim to read_parquet.
+func OpenGroup(label string, files []string) (*Session, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("open group %q: no files", label)
+	}
+	if err := CheckGroupSize(files); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("duckdb", "")
+	if err != nil {
+		return nil, fmt.Errorf("open duckdb: %w", err)
+	}
+	src, err := createGroupView(db, "t1", label, files)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(buildReadParquetGroupView("t", files)); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("read parquet group: %w", err)
+	}
+	return &Session{
+		db:          db,
+		Sources:     []Source{src},
+		ParquetPath: label,
+		Columns:     src.Columns,
+	}, nil
+}
+
+// AttachGroup is the multi-file analogue of Attach — see OpenGroup.
+func (s *Session) AttachGroup(label string, files []string) (string, error) {
+	if len(files) == 0 {
+		return "", fmt.Errorf("attach group %q: no files", label)
+	}
+	if err := CheckGroupSize(files); err != nil {
+		return "", err
+	}
+	view := fmt.Sprintf("t%d", len(s.Sources)+1)
+	src, err := createGroupView(s.db, view, label, files)
+	if err != nil {
+		return "", err
+	}
+	s.Sources = append(s.Sources, src)
+	return view, nil
+}
+
+// createGroupView creates a unioned view from an explicit list of
+// parquet files and returns a populated group Source. The label is
+// stored as both Path and Glob so the existing rendering branches
+// (IsGroup() etc.) continue to work.
+func createGroupView(db *sql.DB, view, label string, files []string) (Source, error) {
+	if _, err := db.Exec(buildReadParquetGroupView(view, files)); err != nil {
+		return Source{}, fmt.Errorf("attach group %q: %w", label, err)
+	}
+	cols, err := describe(db, view)
+	src := Source{
+		View:    view,
+		Path:    label,
+		Columns: cols,
+		Glob:    label,
+		Files:   append([]string(nil), files...),
+	}
+	if err != nil {
+		return src, err
+	}
+	return src, nil
+}
+
+// CheckGroupSize enforces the file-count and total-byte caps for a
+// grouped mount. Returns a descriptive error when either cap is
+// exceeded so the user sees concrete numbers (and the override env
+// vars) instead of a generic "too big". Stat failures on individual
+// files are tolerated — they just don't contribute to the total —
+// because read_parquet will produce its own clearer error if a path
+// turns out to be unreadable.
+func CheckGroupSize(files []string) error {
+	maxFiles := envInt("LAZYDUCKDB_GROUP_MAX_FILES", defaultGroupMaxFiles)
+	maxBytes := envInt64("LAZYDUCKDB_GROUP_MAX_BYTES", defaultGroupMaxBytes)
+	if len(files) > maxFiles {
+		return fmt.Errorf(
+			"refusing to open %d files (cap: %d). narrow the picker filter or override with LAZYDUCKDB_GROUP_MAX_FILES",
+			len(files), maxFiles)
+	}
+	var total int64
+	for _, f := range files {
+		fi, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		total += fi.Size()
+		if total > maxBytes {
+			return fmt.Errorf(
+				"refusing to open group: combined size > %s (cap: %s). narrow the picker filter or override with LAZYDUCKDB_GROUP_MAX_BYTES",
+				humanBytes(total), humanBytes(maxBytes))
+		}
+	}
+	return nil
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func envInt64(key string, def int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func humanBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// sourceFileColumn is the column name DuckDB writes the per-row
+// source-file path into. Picked to be unlikely to collide with a
+// real user column — "filename" is too common (some parquets ship
+// it as a real field, which collides with read_parquet's default).
+const sourceFileColumn = "_source_file"
+
+// buildReadParquetGroupView returns the SQL that mounts an explicit
+// list of parquet files as a unioned view. Always uses
+// union_by_name=true and a custom filename column so heterogeneous
+// schemas merge and rows stay traceable to their source file
+// without colliding with a real "filename" column.
+func buildReadParquetGroupView(view string, files []string) string {
+	quoted := make([]string, len(files))
+	for i, f := range files {
+		quoted[i] = "'" + strings.ReplaceAll(f, "'", "''") + "'"
+	}
+	return fmt.Sprintf(
+		"CREATE VIEW %s AS SELECT * FROM read_parquet([%s], union_by_name=true, filename='%s')",
+		view, strings.Join(quoted, ", "), sourceFileColumn)
+}
+
+// createSourceView creates the SQL view for a single source and
+// returns the populated Source struct. Handles both literal paths
+// and globs — for a glob it also pre-expands the file list so the
+// UI can show how many files are unioned.
+func createSourceView(db *sql.DB, view, parquetPath string) (Source, error) {
+	if _, err := db.Exec(buildReadParquetView(view, parquetPath)); err != nil {
+		return Source{}, fmt.Errorf("attach %s: %w", parquetPath, err)
+	}
+	cols, err := describe(db, view)
+	src := Source{View: view, Path: parquetPath, Columns: cols}
+	if IsGlob(parquetPath) {
+		src.Glob = parquetPath
+		matches, gerr := filepath.Glob(parquetPath)
+		if gerr == nil {
+			sort.Strings(matches)
+			src.Files = matches
+		}
+	}
 	if err != nil {
 		// Best effort: leave the view in place but report the error
-		// — describe failure usually means the file is unreadable,
+		// — describe failure usually means the source is unreadable,
 		// which the user will discover the moment they query.
-		return view, err
+		return src, err
 	}
-	s.Sources = append(s.Sources, Source{View: view, Path: parquetPath, Columns: cols})
-	return view, nil
+	return src, nil
+}
+
+// buildReadParquetView returns the SQL that maps a parquet path or
+// glob to the given view name. Globs get union_by_name + a custom
+// filename column so schema differences across files don't error
+// out and each row stays traceable to its source file.
+func buildReadParquetView(view, parquetPath string) string {
+	escaped := strings.ReplaceAll(parquetPath, "'", "''")
+	if IsGlob(parquetPath) {
+		return fmt.Sprintf(
+			"CREATE VIEW %s AS SELECT * FROM read_parquet('%s', union_by_name=true, filename='%s')",
+			view, escaped, sourceFileColumn)
+	}
+	return fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet('%s')", view, escaped)
 }
 
 func describe(db *sql.DB, view string) ([]Column, error) {

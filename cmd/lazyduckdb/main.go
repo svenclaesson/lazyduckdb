@@ -48,9 +48,13 @@ func main() {
 	}
 
 	args := flag.Args()
-	var paths []string
+	var (
+		paths      []string
+		groupLabel string
+		groupFiles []string
+	)
 	if len(args) == 0 {
-		chosen, err := chooseFromCWD()
+		chosen, group, err := chooseFromCWD()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -59,7 +63,18 @@ func main() {
 			// User cancelled — exit silently, same convention as fzf.
 			return
 		}
-		paths = []string{chosen}
+		if len(group) > 0 {
+			// Picker committed a group via ctrl+a — keep the label
+			// for display and use the resolved file list for the
+			// actual mount.
+			groupLabel = chosen
+			groupFiles = group
+		} else {
+			if abs, err := filepath.Abs(chosen); err == nil {
+				chosen = abs
+			}
+			paths = []string{chosen}
+		}
 	} else {
 		paths = make([]string, len(args))
 		for i, a := range args {
@@ -68,27 +83,48 @@ func main() {
 				fmt.Fprintf(os.Stderr, "resolve path %q: %v\n", a, err)
 				os.Exit(1)
 			}
-			if _, err := os.Stat(p); err != nil {
-				fmt.Fprintf(os.Stderr, "parquet file: %v\n", err)
-				os.Exit(1)
+			// Glob args (e.g. quoted '*.parquet') skip the stat — the
+			// duck layer does its own expansion via filepath.Glob and
+			// hands the pattern to read_parquet for unioning. Stat'ing
+			// a glob would always fail.
+			if !duck.IsGlob(p) {
+				if _, err := os.Stat(p); err != nil {
+					fmt.Fprintf(os.Stderr, "parquet file: %v\n", err)
+					os.Exit(1)
+				}
 			}
 			paths[i] = p
 		}
 	}
 
-	session, err := duck.Open(paths[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open: %v\n", err)
-		os.Exit(1)
-	}
-	defer session.Close()
-	for _, p := range paths[1:] {
-		view, aerr := session.Attach(p)
-		if aerr != nil {
-			fmt.Fprintf(os.Stderr, "attach %s: %v\n", p, aerr)
+	var session *duck.Session
+	if len(groupFiles) > 0 {
+		var err error
+		session, err = duck.OpenGroup(groupLabel, groupFiles)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "open: %v\n", err)
 			os.Exit(1)
 		}
-		_ = view
+	} else {
+		var err error
+		session, err = duck.Open(paths[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "open: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	defer session.Close()
+	// paths is empty when the picker committed a group (handled
+	// above via OpenGroup) — skip the attach loop in that case.
+	if len(paths) > 1 {
+		for _, p := range paths[1:] {
+			view, aerr := session.Attach(p)
+			if aerr != nil {
+				fmt.Fprintf(os.Stderr, "attach %s: %v\n", p, aerr)
+				os.Exit(1)
+			}
+			_ = view
+		}
 	}
 
 	model := app.NewModel(session)
@@ -110,21 +146,21 @@ func isInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-func chooseFromCWD() (string, error) {
+func chooseFromCWD() (string, []string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("getwd: %w", err)
+		return "", nil, fmt.Errorf("getwd: %w", err)
 	}
 	files, err := picker.FindParquetFiles(cwd)
 	if err != nil {
-		return "", fmt.Errorf("scan %s: %w", cwd, err)
+		return "", nil, fmt.Errorf("scan %s: %w", cwd, err)
 	}
 	if len(files) == 0 {
-		return "", fmt.Errorf("no .parquet files in %s — pass a path as argument", cwd)
+		return "", nil, fmt.Errorf("no .parquet files in %s — pass a path as argument", cwd)
 	}
 	if len(files) == 1 {
 		// Single file — skip the picker and just use it.
-		return files[0], nil
+		return files[0], nil, nil
 	}
 	return picker.Pick(files)
 }

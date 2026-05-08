@@ -35,20 +35,30 @@ func FindParquetFiles(dir string) ([]string, error) {
 	return out, nil
 }
 
-// Pick shows an interactive list and returns the selected path.
-// Returns "" with a nil error if the user aborted.
-func Pick(files []string) (string, error) {
+// Pick shows an interactive list and returns the user's choice.
+// path is a single parquet file when the user picked one normally;
+// when the user pressed ctrl+a in search mode to commit every
+// matching file as a group, path is a display label (e.g.
+// "*test*.parquet") and group is the resolved file list. path is
+// "" with both nil/empty when the user aborted.
+func Pick(files []string) (path string, group []string, err error) {
 	m := New(files)
 	p := tea.NewProgram(m)
 	final, err := p.Run()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	fm := final.(Model)
-	if fm.aborted || len(fm.visible) == 0 {
-		return "", nil
+	if fm.aborted {
+		return "", nil, nil
 	}
-	return fm.files[fm.visible[fm.cursor]], nil
+	if g := fm.SelectedGlob(); g != "" {
+		return g, fm.SelectedFiles(), nil
+	}
+	if len(fm.visible) == 0 {
+		return "", nil, nil
+	}
+	return fm.files[fm.visible[fm.cursor]], nil, nil
 }
 
 // Model is the picker state. Exported so it can be embedded inside
@@ -63,6 +73,16 @@ type Model struct {
 
 	searching bool
 	query     string
+
+	// chosenGlob, when non-empty, means the user pressed ctrl+a to
+	// commit the current search as a group. The string is a display
+	// label (e.g. "*test*.parquet") — the actual file set is in
+	// chosenFiles, snapshotted from the visible list at commit time.
+	// Display-only because the picker filter is case-insensitive
+	// while filesystem globs are case-sensitive on Linux/macOS-CS;
+	// passing the resolved paths avoids that mismatch entirely.
+	chosenGlob  string
+	chosenFiles []string
 }
 
 // New constructs a picker for the given files. The list starts
@@ -79,15 +99,53 @@ func (m Model) Done() bool { return m.done }
 func (m Model) Aborted() bool { return m.aborted }
 
 // Selected returns the path the cursor currently points at, or "" if
-// the visible list is empty. Stable to call before Done().
+// the visible list is empty. When the user committed a glob via
+// ctrl+a in search mode, the glob pattern is returned instead of a
+// concrete file path. Stable to call before Done().
 func (m Model) Selected() string {
+	if m.chosenGlob != "" {
+		return m.chosenGlob
+	}
 	if len(m.visible) == 0 {
 		return ""
 	}
 	return m.files[m.visible[m.cursor]]
 }
 
+// SelectedGlob returns the glob pattern the user committed via
+// ctrl+a, or "" when a single file was picked normally. Embedded
+// callers (the main app's attach flow) use this to distinguish
+// "open these N files as a group" from "open this one file".
+func (m Model) SelectedGlob() string { return m.chosenGlob }
+
+// SelectedFiles returns the resolved file list captured when the
+// user pressed ctrl+a, in the same order they were visible. Empty
+// for single-file picks. Always prefer this over the glob pattern
+// when actually mounting the source — it bypasses filesystem
+// case-sensitivity quirks (the picker filter is case-insensitive).
+func (m Model) SelectedFiles() []string { return m.chosenFiles }
+
 func (m Model) Init() tea.Cmd { return nil }
+
+// queryToGlob translates the picker's substring search query into a
+// shell glob that matches the same files the substring filter just
+// showed on screen. The mapping has to honor what the user sees:
+// "test" filters to anything containing "test" — so the glob is
+// *test*.parquet, not test*.parquet.
+func queryToGlob(q string) string {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "*.parquet"
+	}
+	// User typed a literal glob — trust them, just ensure the .parquet suffix.
+	if strings.ContainsAny(q, "*?[") {
+		if strings.HasSuffix(strings.ToLower(q), ".parquet") {
+			return q
+		}
+		return q + ".parquet"
+	}
+	return "*" + q + "*.parquet"
+}
 
 // refilter recomputes visible from files and the current query, then
 // clamps the cursor.
@@ -129,6 +187,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searching = false
 			m.query = ""
 			return m.refilter(), nil
+		case "ctrl+a":
+			// Commit every currently-visible file as a group.
+			// chosenGlob is just the display label; chosenFiles is
+			// the authoritative list, snapshotted from the visible
+			// state so case-insensitive filter matches survive a
+			// case-sensitive filesystem.
+			if len(m.visible) == 0 {
+				return m, nil
+			}
+			m.chosenGlob = queryToGlob(m.query)
+			m.chosenFiles = make([]string, len(m.visible))
+			for i, idx := range m.visible {
+				m.chosenFiles[i] = m.files[idx]
+			}
+			m.done = true
+			return m, tea.Quit
 		case "enter":
 			if len(m.visible) == 0 {
 				return m, nil
@@ -240,7 +314,7 @@ func (m Model) ViewBody() string {
 	if m.searching {
 		b.WriteString(pickerQueryStyle.Render("/" + m.query))
 		b.WriteByte('\n')
-		b.WriteString(pickerHelpStyle.Render("type to filter · ↑/↓ move · enter select · esc clear · ctrl+c quit"))
+		b.WriteString(pickerHelpStyle.Render("type to filter · ↑/↓ move · enter select · ctrl+a group all matches · esc clear · ctrl+c quit"))
 	} else {
 		b.WriteString(pickerHelpStyle.Render("↑/↓ move · / search · enter select · q/esc cancel"))
 	}
