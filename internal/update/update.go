@@ -10,6 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -123,8 +127,64 @@ func PromptText(latest, current string) string {
 	if !strings.HasPrefix(latest, "v") {
 		latest = "v" + latest
 	}
-	return fmt.Sprintf("lazyduckdb %s is available (you have v%s).\n  upgrade: %s\n  press enter to skip and continue: ",
+	return fmt.Sprintf("lazyduckdb %s is available (you have v%s).\n  upgrade: %s\n  type yes to install now, or press enter to skip and continue: ",
 		latest, strings.TrimPrefix(current, "v"), InstallCommand)
+}
+
+// Install runs InstallCommand, streaming its stdout/stderr to the
+// caller's terminal so the user sees `go install` progress. Returns
+// the path to the freshly-installed binary on success — that's the
+// one main.go exec's into so the new version takes over without a
+// manual relaunch.
+func Install(ctx context.Context) (string, error) {
+	gobin, err := goBinDir(ctx)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, "go", "install", "github.com/svenclaesson/lazyduckdb/cmd/lazyduckdb@latest")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("go install: %w", err)
+	}
+	bin := filepath.Join(gobin, binaryName())
+	if _, err := os.Stat(bin); err != nil {
+		// `go install` succeeded but we can't find the binary where we
+		// expect it — treat as a soft failure so the caller falls back
+		// to "please relaunch" rather than exec'ing a stale path.
+		return "", fmt.Errorf("installed binary not found at %s: %w", bin, err)
+	}
+	return bin, nil
+}
+
+// goBinDir returns the directory `go install` writes binaries to.
+// Honors GOBIN if set, otherwise falls back to `go env GOPATH`/bin —
+// the same precedence the go toolchain uses.
+func goBinDir(ctx context.Context) (string, error) {
+	if v := strings.TrimSpace(os.Getenv("GOBIN")); v != "" {
+		return v, nil
+	}
+	out, err := exec.CommandContext(ctx, "go", "env", "GOPATH").Output()
+	if err != nil {
+		return "", fmt.Errorf("go env GOPATH: %w", err)
+	}
+	gopath := strings.TrimSpace(string(out))
+	if gopath == "" {
+		return "", errors.New("empty GOPATH")
+	}
+	// `go env GOPATH` may return a list separated by os.PathListSeparator;
+	// the first entry is the one `go install` uses.
+	if i := strings.IndexByte(gopath, os.PathListSeparator); i >= 0 {
+		gopath = gopath[:i]
+	}
+	return filepath.Join(gopath, "bin"), nil
+}
+
+func binaryName() string {
+	if runtime.GOOS == "windows" {
+		return "lazyduckdb.exe"
+	}
+	return "lazyduckdb"
 }
 
 // ErrSkipped is returned by Prompt to signal the user dismissed the

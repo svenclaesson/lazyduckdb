@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -43,7 +46,14 @@ func main() {
 	if isInteractive() {
 		if r := update.CheckWithTimeout(version, 1500*time.Millisecond); r.Available {
 			fmt.Print(update.PromptText(r.LatestTag, version))
-			_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
+			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+			if strings.EqualFold(strings.TrimSpace(line), "yes") {
+				if err := installAndRelaunch(); err != nil {
+					// Print and continue — we'd rather launch the old
+					// version than refuse to start the app at all.
+					fmt.Fprintf(os.Stderr, "install failed: %v\nstarting current version...\n", err)
+				}
+			}
 		}
 	}
 
@@ -135,6 +145,35 @@ func main() {
 		fmt.Fprintf(os.Stderr, "application error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// installAndRelaunch runs `go install ...@latest` and then exec's
+// the freshly-installed binary in place of this process, preserving
+// argv so the user lands in the same state they asked for. The Go
+// toolchain has up to a few minutes of latency between a `gh
+// release` and the proxy serving the new module version; the install
+// itself enforces its own timeout, but we leave the parent context
+// uncancelled so a slow download still completes.
+func installAndRelaunch() error {
+	bin, err := update.Install(context.Background())
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(bin, os.Args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		// Propagate the new binary's exit code so shell pipelines see
+		// the right status. exec.ExitError carries it directly; any
+		// other error means we failed to spawn at all.
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	os.Exit(0)
+	return nil // unreachable
 }
 
 // isInteractive reports whether both stdin and stdout look like a
