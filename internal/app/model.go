@@ -387,6 +387,12 @@ func (m *Model) propagateSize() {
 	}
 	m.editor.SetSize(m.width, editorInner)
 	m.results.SetSize(m.width, resultsHeight)
+	if m.attacher != nil {
+		// Picker replaces editor + results, so it gets that combined
+		// budget. Rough sum: editor outer(6) + results inner +
+		// 2 result borders ≈ resultsHeight + 8.
+		m.attacher.SetSize(m.width, resultsHeight+editorHeight+2)
+	}
 }
 
 func (m *Model) setFocus(f focus) {
@@ -513,6 +519,11 @@ func (m Model) openAttacher() Model {
 	p := picker.New(available)
 	m.attacher = &p
 	m.status = ""
+	// Push the current terminal size into the freshly-opened picker
+	// so its viewport is sized correctly on the first frame —
+	// otherwise the picker renders with height 0 until the next
+	// WindowSizeMsg, which on a static terminal might never arrive.
+	m.propagateSize()
 	return m
 }
 

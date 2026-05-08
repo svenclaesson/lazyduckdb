@@ -83,7 +83,21 @@ type Model struct {
 	// passing the resolved paths avoids that mismatch entirely.
 	chosenGlob  string
 	chosenFiles []string
+
+	// height is the row budget the picker should fit its rendered
+	// body into. Standalone runs pick this up from WindowSizeMsg;
+	// the embedded usage in app.go calls SetSize explicitly with
+	// the leftover height after the surrounding chrome. Zero means
+	// "render every visible item" — the legacy fallback before the
+	// viewport was added.
+	height int
 }
+
+// SetSize tells the picker how many rows it has to render its body
+// into. Used by the embedded caller (the main app) to forward the
+// terminal-size budget; the standalone Run() picks it up itself
+// from WindowSizeMsg.
+func (m *Model) SetSize(_ int, height int) { m.height = height }
 
 // New constructs a picker for the given files. The list starts
 // unfiltered; call Update with key events to drive it.
@@ -170,6 +184,13 @@ func (m Model) refilter() Model {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		// Standalone-Run path: Bubble Tea forwards the terminal size
+		// here. Embedded usage doesn't go through this — the app
+		// calls SetSize directly via propagateSize() instead.
+		m.height = size.Height
+		return m, nil
+	}
 	key, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return m, nil
@@ -300,13 +321,22 @@ func (m Model) ViewBody() string {
 		b.WriteString(pickerItemStyle.Render("(no matches)"))
 		b.WriteByte('\n')
 	}
-	for i, idx := range m.visible {
-		name := filepath.Base(m.files[idx])
+	start, end := m.itemWindow()
+	if start > 0 {
+		b.WriteString(pickerHelpStyle.Render(fmt.Sprintf("  ↑ %d more above", start)))
+		b.WriteByte('\n')
+	}
+	for i := start; i < end; i++ {
+		name := filepath.Base(m.files[m.visible[i]])
 		if i == m.cursor {
 			b.WriteString(pickerActiveStyle.Render("▶ " + name))
 		} else {
 			b.WriteString(pickerItemStyle.Render("  " + name))
 		}
+		b.WriteByte('\n')
+	}
+	if end < len(m.visible) {
+		b.WriteString(pickerHelpStyle.Render(fmt.Sprintf("  ↓ %d more below", len(m.visible)-end)))
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
@@ -323,4 +353,39 @@ func (m Model) ViewBody() string {
 
 func (m Model) View() tea.View {
 	return tea.NewView(m.ViewBody())
+}
+
+// itemWindow returns the [start, end) slice of m.visible that
+// should actually be rendered, sized to fit m.height and scrolled
+// so the cursor is always inside the window. When height is 0 or
+// the list fits entirely, returns the full range — preserving the
+// pre-viewport behavior so small dirs render unchanged.
+//
+// Chrome budget subtracted from m.height:
+//   title (1) + blank (1) + ↑more (1) + ↓more (1) +
+//   blank (1) + query (1, search mode) + help (1) = ~7
+// We deduct 7 so the window leaves room for both scroll markers
+// even when only one is needed; the small underuse is worth not
+// having the layout jitter as the cursor crosses the boundary.
+func (m Model) itemWindow() (start, end int) {
+	n := len(m.visible)
+	if n == 0 {
+		return 0, 0
+	}
+	const chrome = 7
+	rows := m.height - chrome
+	if rows <= 0 || rows >= n {
+		return 0, n
+	}
+	// Anchor the window so the cursor is always visible. We center
+	// when there's slack on both sides; clamp to the head/tail
+	// when near the ends.
+	start = m.cursor - rows/2
+	if start < 0 {
+		start = 0
+	}
+	if start+rows > n {
+		start = n - rows
+	}
+	return start, start + rows
 }
