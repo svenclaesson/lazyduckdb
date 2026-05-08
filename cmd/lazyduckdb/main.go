@@ -105,6 +105,21 @@ func main() {
 			}
 			paths[i] = p
 		}
+		// Multi-arg invocations are usually a shell expanding a glob
+		// (`lazyduckdb Ford*.parquet` → `Ford1.parquet Ford2.parquet
+		// ...`), and the user's mental model is a single unioned
+		// table — not three separate t1/t2/t3 views to JOIN. When the
+		// resolved paths look like that pattern, fold them into a
+		// group so queries against `t` / `t1` see all rows. Mixed or
+		// unrelated paths fall through to the original t1/t2/t3
+		// behavior, which is still useful for cross-file joins.
+		if len(paths) > 1 {
+			if label, files, ok := detectGlobExpansion(paths); ok {
+				groupLabel = label
+				groupFiles = files
+				paths = nil
+			}
+		}
 	}
 
 	var session *duck.Session
@@ -145,6 +160,97 @@ func main() {
 		fmt.Fprintf(os.Stderr, "application error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// detectGlobExpansion decides whether a multi-arg invocation looks
+// like the shell expanded a single glob pattern. When yes, it
+// reconstructs the pattern (e.g. "/abs/dir/Ford*.parquet") so the
+// duck layer can treat the files as one unioned view. Conservative
+// on purpose: it requires same directory, no already-glob args, and
+// either a basename prefix of ≥ 2 chars or a non-trivial common
+// suffix (more than just the extension). Anything else falls back
+// to t1/t2/t3, which is what people doing real cross-file joins
+// expect.
+func detectGlobExpansion(paths []string) (string, []string, bool) {
+	if len(paths) < 2 {
+		return "", nil, false
+	}
+	for _, p := range paths {
+		if duck.IsGlob(p) {
+			return "", nil, false
+		}
+	}
+	dir := filepath.Dir(paths[0])
+	bases := make([]string, len(paths))
+	bases[0] = filepath.Base(paths[0])
+	for i := 1; i < len(paths); i++ {
+		if filepath.Dir(paths[i]) != dir {
+			return "", nil, false
+		}
+		bases[i] = filepath.Base(paths[i])
+	}
+	allSame := true
+	for i := 1; i < len(bases); i++ {
+		if bases[i] != bases[0] {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		return "", nil, false
+	}
+	prefix := commonPrefix(bases)
+	suffix := commonSuffix(bases)
+	ext := filepath.Ext(bases[0])
+	// Require ≥ 2 chars of meaningful prefix or suffix-body so two
+	// unrelated files that just happen to share a trailing letter
+	// before the extension (`cars.parquet`, `trucks.parquet`) don't
+	// get coerced into a group.
+	suffixBody := len(suffix) - len(ext)
+	if suffixBody < 0 {
+		suffixBody = 0
+	}
+	if len(prefix) < 2 && suffixBody < 2 {
+		return "", nil, false
+	}
+	return filepath.Join(dir, prefix+"*"+suffix), paths, true
+}
+
+func commonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	p := ss[0]
+	for _, s := range ss[1:] {
+		n := 0
+		for n < len(p) && n < len(s) && p[n] == s[n] {
+			n++
+		}
+		p = p[:n]
+		if p == "" {
+			return ""
+		}
+	}
+	return p
+}
+
+func commonSuffix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	s0 := ss[0]
+	n := len(s0)
+	for _, s := range ss[1:] {
+		m := 0
+		for m < n && m < len(s) && s0[len(s0)-1-m] == s[len(s)-1-m] {
+			m++
+		}
+		n = m
+		if n == 0 {
+			return ""
+		}
+	}
+	return s0[len(s0)-n:]
 }
 
 // installAndRelaunch runs `go install ...@<tag>` and then exec's
