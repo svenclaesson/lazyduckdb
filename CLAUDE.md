@@ -44,10 +44,20 @@ When you add a new shortcut, ask:
 ## Running
 
 ```
-go run ./cmd/lazyduckdb [parquet_file]
+go run ./cmd/lazyduckdb [parquet_file ...]
 ```
 
 With no argument it lists `*.parquet` in the current directory and lets you pick one.
+
+### Multi-file CLI contract
+
+There are three ways files end up mounted, and they're not interchangeable — preserve the distinction when touching `cmd/lazyduckdb/main.go`:
+
+1. **Explicit list of unrelated files** (`lazyduckdb a.parquet b.parquet`) → mounted as `t1`, `t2`, … via `duck.Open` + `Session.Attach`. Existing cross-file-join workflow.
+2. **Shell-expanded glob** (`lazyduckdb Ford*.parquet`, which the shell turns into `Ford1.parquet Ford2.parquet …` before lazyduckdb sees it) → folded into a single unioned `t` / `t1` via `duck.OpenGroup`. The fold is gated by `detectGlobExpansion` in `main.go`: same directory, no already-glob arg, ≥ 2 chars of common basename prefix or suffix-body. Anything weaker falls back to (1) — that's intentional; don't loosen the threshold without tests covering the regressions in `main_test.go`.
+3. **Quoted glob** (`lazyduckdb 'Ford*.parquet'`) → reaches the binary unexpanded; `duck.IsGlob` short-circuits the per-arg stat, and `duck.Open` hands the pattern to `read_parquet` for DuckDB-side expansion. Picker `Ctrl+A` lands here too via `OpenGroup` with the picker's reconstructed label.
+
+When adding a new arg-handling code path, decide which of these three buckets it belongs to before writing — mixing them produces hard-to-debug "why are some queries hitting only one file" reports.
 
 ## Shortcut: "install"
 

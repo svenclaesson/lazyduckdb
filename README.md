@@ -59,18 +59,47 @@ The file is exposed as a DuckDB view named `t`, so queries look like:
 select * from t limit 100
 ```
 
+### Multiple files
+
+Pass several files to mount each one as `t1`, `t2`, … — handy for cross-file joins:
+
+```sh
+lazyduckdb sales.parquet inventory.parquet
+```
+
+```sql
+select * from t1 join t2 on t1.sku = t2.sku
+```
+
+When the file list looks like a single shell glob expansion (same directory plus a common basename prefix or suffix of two characters or more), the files are folded into one unioned view instead — query them as `t` or `t1`:
+
+```sh
+lazyduckdb Ford*.parquet
+```
+
+```sql
+select count(*) from t   -- every Ford*.parquet row, combined
+```
+
+You can also pass the glob quoted so the shell doesn't expand it; DuckDB's `read_parquet` does the expansion internally:
+
+```sh
+lazyduckdb 'data/2024-*.parquet'
+```
+
+In the no-arg picker, `Ctrl+A` selects every visible file and commits them as a single group with the same unioned-`t` semantics.
+
 ## Scope and limitations
 
-lazyduckdb currently exposes only a very small subset of DuckDB's Parquet capabilities. It's intended for quickly exploring a single local file, not as a general-purpose DuckDB frontend.
+lazyduckdb is intended for quickly exploring local Parquet files, not as a general-purpose DuckDB frontend.
 
 What works today:
 
-- Opening **one** local `.parquet` file, exposed as a DuckDB view named `t`.
-- Running arbitrary `SELECT` queries against `t` (and any DuckDB SQL that doesn't depend on the features below).
+- Opening one or more local `.parquet` files, either passed explicitly (mounted as `t1`, `t2`, …) or as a shell glob / quoted glob (folded into a single unioned `t`). The picker can also commit a multi-file group via `Ctrl+A`.
+- Running arbitrary `SELECT` queries against `t` / `t1` … (and any DuckDB SQL that doesn't depend on the features below).
 
 Not supported yet:
 
-- Multiple files, globs, or directories (`read_parquet(['a.parquet', 'b.parquet'])`, `read_parquet('data/*.parquet')`).
 - Hive-partitioned datasets (`hive_partitioning=1`).
 - Remote Parquet over HTTP(S), S3, GCS, Azure, or HuggingFace.
 - Custom `read_parquet` options (schema overrides, `union_by_name`, `filename`, encryption, etc.).
