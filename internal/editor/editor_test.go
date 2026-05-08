@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestNonASCIIRunesAreInserted(t *testing.T) {
+	// Regression: HandleKey used to gate rune insertion on `len(key) == 1`,
+	// which is byte length — so multi-byte UTF-8 runes ("é", "ö", "🦆")
+	// were silently dropped on the floor. model.go calls HandleKey once
+	// per rune (`for _, r := range msg.Text { HandleKey(string(r)) }`),
+	// so each call's `key` is exactly one rune, possibly multi-byte.
+	m := New()
+	m.Focus()
+	for _, r := range "naïve 🦆" {
+		m.HandleKey(string(r))
+	}
+	if got := m.Value(); got != "naïve 🦆" {
+		t.Fatalf("expected non-ASCII runes to be inserted verbatim, got %q", got)
+	}
+}
+
+func TestInvalidUTF8IsRejected(t *testing.T) {
+	// A two-rune string (or invalid UTF-8) must not be inserted as a
+	// single insertRune call — the contract is "exactly one rune".
+	m := New()
+	m.Focus()
+	m.HandleKey("ab")        // two ASCII runes
+	m.HandleKey("\xff\xfe")  // invalid UTF-8
+	if got := m.Value(); got != "" {
+		t.Fatalf("expected multi-rune / invalid input to be ignored, got %q", got)
+	}
+}
+
 func TestTabCompletesUniquePrefix(t *testing.T) {
 	m := New()
 	m.SetDictionary([]string{"customer_id", "customer_name", "order_id"})

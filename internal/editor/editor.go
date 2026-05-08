@@ -192,8 +192,11 @@ func (m *Model) HandleKey(key string) bool {
 		m.col = len([]rune(m.lines[m.row]))
 		return true
 	}
-	if len(key) == 1 {
-		r := rune(key[0])
+	// Single-rune printable keys (ASCII or multi-byte UTF-8 like "é",
+	// "🦆") arrive as one HandleKey call per rune from model.go. The
+	// length check has to be rune-based, not byte-based — `len("é")`
+	// is 2, so a byte comparison silently swallows non-ASCII input.
+	if r, size := utf8.DecodeRuneInString(key); size == len(key) && r != utf8.RuneError {
 		inCompletion := m.sugSource != nil
 		m.insertRune(r)
 		switch {
