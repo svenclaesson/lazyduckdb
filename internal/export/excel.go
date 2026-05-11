@@ -148,7 +148,16 @@ func openFile(path string) error {
 		// consume from the first quoted argument.
 		cmd = exec.Command("cmd", "/c", "start", "", path)
 	default:
-		cmd = exec.Command("xdg-open", path)
+		// WSL: prefer wslview (wslu package), fall back to explorer.exe.
+		if os.Getenv("WSL_DISTRO_NAME") != "" {
+			if wslview, err := exec.LookPath("wslview"); err == nil {
+				cmd = exec.Command(wslview, path)
+			} else {
+				cmd = exec.Command("explorer.exe", path)
+			}
+		} else {
+			cmd = exec.Command("xdg-open", path)
+		}
 	}
 	return cmd.Start()
 }
