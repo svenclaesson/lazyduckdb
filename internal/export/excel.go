@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/xuri/excelize/v2"
@@ -148,12 +149,18 @@ func openFile(path string) error {
 		// consume from the first quoted argument.
 		cmd = exec.Command("cmd", "/c", "start", "", path)
 	default:
-		// WSL: prefer wslview (wslu package), fall back to explorer.exe.
+		// WSL: prefer wslview (wslu), which understands Linux paths natively.
+		// Fall back to explorer.exe with the path converted to a Windows UNC
+		// path (\\wsl.localhost\distro\...) so Explorer can navigate to it.
 		if os.Getenv("WSL_DISTRO_NAME") != "" {
 			if wslview, err := exec.LookPath("wslview"); err == nil {
 				cmd = exec.Command(wslview, path)
 			} else {
-				cmd = exec.Command("explorer.exe", path)
+				winPath := path
+				if out, err := exec.Command("wslpath", "-w", path).Output(); err == nil {
+					winPath = strings.TrimSpace(string(out))
+				}
+				cmd = exec.Command("explorer.exe", winPath)
 			}
 		} else {
 			cmd = exec.Command("xdg-open", path)
