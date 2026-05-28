@@ -20,7 +20,7 @@ import (
 	"github.com/svenclaesson/lazyduckdb/internal/update"
 )
 
-var version = "0.1.17"
+var version = "0.1.18"
 
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
