@@ -175,6 +175,15 @@ func (m *Model) HandleKey(key string) bool {
 		m.clearSuggestions()
 		m.moveWordRight()
 		return true
+	// Option+Backspace on macOS Terminal / iTerm2 arrives as ESC+DEL → "alt+backspace".
+	// ctrl+w is the readline backward-kill-word convention and works on every terminal.
+	case "alt+backspace", "ctrl+w":
+		inCompletion := m.sugSource != nil
+		m.backspaceWord()
+		if inCompletion {
+			m.refilterSuggestions()
+		}
+		return true
 	case "up":
 		m.clearSuggestions()
 		m.moveUp()
@@ -254,6 +263,31 @@ func (m *Model) backspace() {
 	m.lines[m.row-1] = string(prev) + m.lines[m.row]
 	m.lines = append(m.lines[:m.row], m.lines[m.row+1:]...)
 	m.row--
+}
+
+// backspaceWord deletes from the caret back to the start of the
+// previous word. Mirrors moveWordLeft: skip trailing non-word runes,
+// then delete the word itself. At column 0 it falls through to a
+// single-line-join backspace so empty lines collapse cleanly.
+func (m *Model) backspaceWord() {
+	if m.col == 0 {
+		m.backspace()
+		return
+	}
+	line := []rune(m.lines[m.row])
+	i := m.col
+	for i > 0 && !isWordRune(line[i-1]) {
+		i--
+	}
+	for i > 0 && isWordRune(line[i-1]) {
+		i--
+	}
+	if i == m.col {
+		return
+	}
+	line = append(line[:i], line[m.col:]...)
+	m.lines[m.row] = string(line)
+	m.col = i
 }
 
 func (m *Model) moveLeft() {

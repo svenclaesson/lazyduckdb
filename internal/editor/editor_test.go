@@ -33,6 +33,50 @@ func TestInvalidUTF8IsRejected(t *testing.T) {
 	}
 }
 
+func TestAltBackspaceDeletesWord(t *testing.T) {
+	m := New()
+	m.Focus()
+	m.SetValue("SELECT * FROM customers")
+	m.row, m.col = 0, len("SELECT * FROM customers")
+	m.HandleKey("alt+backspace")
+	if got := m.Value(); got != "SELECT * FROM " {
+		t.Fatalf("alt+backspace should delete 'customers', got %q", got)
+	}
+	// Trailing whitespace is itself a word boundary: the next
+	// alt+backspace should chew through both the space run and "FROM".
+	m.HandleKey("alt+backspace")
+	if got := m.Value(); got != "SELECT * " {
+		t.Fatalf("alt+backspace should delete ' FROM', got %q", got)
+	}
+}
+
+func TestCtrlWDeletesWord(t *testing.T) {
+	// ctrl+w is the readline fallback for terminals that don't emit
+	// alt+backspace as ESC+DEL (or where the user has rebound it).
+	m := New()
+	m.Focus()
+	m.SetValue("one two three")
+	m.row, m.col = 0, len("one two three")
+	m.HandleKey("ctrl+w")
+	if got := m.Value(); got != "one two " {
+		t.Fatalf("ctrl+w should delete 'three', got %q", got)
+	}
+}
+
+func TestAltBackspaceAtLineStartJoinsLine(t *testing.T) {
+	// At column 0 the word-delete should degrade to a regular
+	// backspace and join with the previous line — anything else
+	// silently swallows the keystroke at line boundaries.
+	m := New()
+	m.Focus()
+	m.SetValue("first\nsecond")
+	m.row, m.col = 1, 0
+	m.HandleKey("alt+backspace")
+	if got := m.Value(); got != "firstsecond" {
+		t.Fatalf("alt+backspace at col 0 should join lines, got %q", got)
+	}
+}
+
 func TestTabCompletesUniquePrefix(t *testing.T) {
 	m := New()
 	m.SetDictionary([]string{"customer_id", "customer_name", "order_id"})
