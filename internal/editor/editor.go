@@ -149,6 +149,17 @@ func (m *Model) HandleKey(key string) bool {
 			m.refilterSuggestions()
 		}
 		return true
+	case "delete":
+		// Forward-delete (fn+Delete on macOS, "Del" on full keyboards)
+		// arrives as "delete". Removes the rune to the right of the
+		// caret; mirror backspace's completion-refilter so deleting back
+		// into a word keeps the popup in sync.
+		inCompletion := m.sugSource != nil
+		m.deleteForward()
+		if inCompletion {
+			m.refilterSuggestions()
+		}
+		return true
 	case "left":
 		if len(m.suggestions) > 0 {
 			m.sugIdx = (m.sugIdx - 1 + len(m.suggestions)) % len(m.suggestions)
@@ -180,6 +191,15 @@ func (m *Model) HandleKey(key string) bool {
 	case "alt+backspace", "ctrl+w":
 		inCompletion := m.sugSource != nil
 		m.backspaceWord()
+		if inCompletion {
+			m.refilterSuggestions()
+		}
+		return true
+	// Forward word-delete. Option+fn+Delete on macOS arrives as
+	// "alt+delete"; "alt+d" is the readline forward-kill-word alias.
+	case "alt+delete", "alt+d":
+		inCompletion := m.sugSource != nil
+		m.deleteWordForward()
 		if inCompletion {
 			m.refilterSuggestions()
 		}
@@ -288,6 +308,49 @@ func (m *Model) backspaceWord() {
 	line = append(line[:i], line[m.col:]...)
 	m.lines[m.row] = string(line)
 	m.col = i
+}
+
+// deleteForward removes the rune to the right of the caret. At the end
+// of a line it pulls the following line up (the forward mirror of
+// backspace's line-join), and at the very end of the buffer it's a no-op.
+func (m *Model) deleteForward() {
+	line := []rune(m.lines[m.row])
+	if m.col < len(line) {
+		line = append(line[:m.col], line[m.col+1:]...)
+		m.lines[m.row] = string(line)
+		return
+	}
+	if m.row >= len(m.lines)-1 {
+		return
+	}
+	m.lines[m.row] = string(line) + m.lines[m.row+1]
+	m.lines = append(m.lines[:m.row+1], m.lines[m.row+2:]...)
+}
+
+// deleteWordForward deletes from the caret forward to the end of the
+// next word. The exact mirror of backspaceWord: skip leading non-word
+// runes, then the word itself — so the caret stays put while the word
+// (plus any separators between it and the caret) is chewed away. At
+// end-of-line it falls through to a forward-delete so the next line
+// joins cleanly.
+func (m *Model) deleteWordForward() {
+	line := []rune(m.lines[m.row])
+	if m.col >= len(line) {
+		m.deleteForward()
+		return
+	}
+	i := m.col
+	for i < len(line) && !isWordRune(line[i]) {
+		i++
+	}
+	for i < len(line) && isWordRune(line[i]) {
+		i++
+	}
+	if i == m.col {
+		return
+	}
+	line = append(line[:m.col], line[i:]...)
+	m.lines[m.row] = string(line)
 }
 
 func (m *Model) moveLeft() {

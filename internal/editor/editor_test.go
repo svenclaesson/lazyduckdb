@@ -33,6 +33,76 @@ func TestInvalidUTF8IsRejected(t *testing.T) {
 	}
 }
 
+func TestDeleteRemovesCharToTheRight(t *testing.T) {
+	// The forward-delete key (fn+Delete on macOS, "Del" on full
+	// keyboards) arrives as the string "delete". It must remove the
+	// rune to the right of the caret without moving the caret.
+	m := New()
+	m.Focus()
+	m.SetValue("SELECT")
+	m.row, m.col = 0, 0
+	if !m.HandleKey("delete") {
+		t.Fatalf("delete should be consumed by the editor")
+	}
+	if got := m.Value(); got != "ELECT" {
+		t.Fatalf("delete should remove 'S', got %q", got)
+	}
+	if m.col != 0 {
+		t.Fatalf("delete should not move the caret, col=%d", m.col)
+	}
+}
+
+func TestDeleteAtLineEndJoinsNextLine(t *testing.T) {
+	// At end-of-line, forward-delete pulls the following line up,
+	// mirroring backspace's line-join at column 0.
+	m := New()
+	m.Focus()
+	m.SetValue("ab\ncd")
+	m.row, m.col = 0, 2 // end of "ab"
+	m.HandleKey("delete")
+	if got := m.Value(); got != "abcd" {
+		t.Fatalf("delete at line end should join next line, got %q", got)
+	}
+	// At the very end of the buffer it's a no-op.
+	m.row, m.col = 0, 4
+	m.HandleKey("delete")
+	if got := m.Value(); got != "abcd" {
+		t.Fatalf("delete at buffer end should be a no-op, got %q", got)
+	}
+}
+
+func TestAltDeleteDeletesWordForward(t *testing.T) {
+	// Forward word-delete: Option+fn+Delete arrives as "alt+delete"
+	// (and the readline alias "alt+d"). Mirrors moveWordRight — it
+	// chews the word to the right of the caret without moving it.
+	m := New()
+	m.Focus()
+	m.SetValue("SELECT * FROM customers")
+	m.row, m.col = 0, 0
+	m.HandleKey("alt+delete")
+	if got := m.Value(); got != " * FROM customers" {
+		t.Fatalf("alt+delete should delete 'SELECT', got %q", got)
+	}
+	// Leading separators plus the next word go together (here " * FROM"),
+	// mirroring how alt+backspace bundles a separator with its word.
+	m.HandleKey("alt+delete")
+	if got := m.Value(); got != " customers" {
+		t.Fatalf("alt+delete should delete ' * FROM', got %q", got)
+	}
+}
+
+func TestAltDDeletesWordForward(t *testing.T) {
+	// alt+d is the readline forward-kill-word fallback.
+	m := New()
+	m.Focus()
+	m.SetValue("one two three")
+	m.row, m.col = 0, 0
+	m.HandleKey("alt+d")
+	if got := m.Value(); got != " two three" {
+		t.Fatalf("alt+d should delete 'one', got %q", got)
+	}
+}
+
 func TestAltBackspaceDeletesWord(t *testing.T) {
 	m := New()
 	m.Focus()
